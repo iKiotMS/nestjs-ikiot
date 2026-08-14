@@ -16,6 +16,17 @@
 //   - Brand and Category gained tenant_id (permissions.json grants TENANT_OWNER and
 //     WAREHOUSE_MANAGER full CRUD on both, so they were never meant to be global)
 //   - The Paysheet/"PaySheet" ref casing bug is resolved by using "Paysheet" everywhere
+//   - RBAC redesign (2026-08-14): the old fixed 6-role enum (SUPER_ADMIN/TENANT_OWNER/
+//     BRANCH_MANAGER/WAREHOUSE_MANAGER/STAFF/CUSTOMER) + static permissions.json is
+//     replaced by User.systemRole (coarse account kind: ADMIN | TENANT_OWNER | CUSTOMER |
+//     STAFF) plus a tenant-owned, tenant-editable Role/RolePermission system for STAFF
+//     accounts. ADMIN (platform) and TENANT_OWNER are fixed, always-full-access, and are
+//     NOT rows in the Role table. Branch/warehouse scope stays an independent field on
+//     User (unrelated to which Role a STAFF account holds). RolePermission entries are
+//     constrained to a fixed PermissionCatalog (resource, action) seeded from the old
+//     permissions.json's module/action universe — tenants pick from this catalog, they
+//     cannot invent new resources/actions (that would break every @Permissions() guard
+//     already wired to a specific resource/action string in code).
 
 generator client {
   provider     = "prisma-client"
@@ -50,6 +61,7 @@ model Tenant {
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   users                   User[]                     @relation("TenantUsers")
+  roles                   Role[]
   subscriptions           Subscription[]
   subscriptionInvoices    SubscriptionInvoice[]
   branches                Branch[]
@@ -87,12 +99,14 @@ model Tenant {
 
 model User {
   id             String     @id @default(uuid())
-  tenantId       String     @map("tenant_id")
-  tenant         Tenant     @relation("TenantUsers", fields: [tenantId], references: [id])
+  tenantId       String?    @map("tenant_id") // null = platform-level account (systemRole = ADMIN)
+  tenant         Tenant?    @relation("TenantUsers", fields: [tenantId], references: [id])
   email          String?
   password       String? // required at the app layer when status is ACTIVE/SUSPENDED (was a conditional Mongoose validator)
   phoneNumber    String     @map("phone_number")
-  role           String // SUPER_ADMIN | TENANT_OWNER | BRANCH_MANAGER | WAREHOUSE_MANAGER | STAFF | CUSTOMER
+  systemRole     String     @default("STAFF") @map("system_role") // ADMIN | TENANT_OWNER | CUSTOMER | STAFF
+  roleId         String?    @map("role_id") // tenant-defined custom role; only meaningful when systemRole = STAFF
+  role           Role?      @relation(fields: [roleId], references: [id])
   status         String     @default("ACTIVE") // ACTIVE | INACTIVE | SUSPENDED | DELETED
   createdById    String?    @map("created_by")
   createdBy      User?      @relation("UserCreatedBy", fields: [createdById], references: [id])
@@ -168,6 +182,53 @@ model User {
   stockMovementRequests       StockMovementRequest[]
 
   @@map("users")
+}
+
+/// Tenant-defined custom role for STAFF accounts. TENANT_OWNER/ADMIN are NOT rows here —
+/// they're fixed, always-full-access account kinds (see User.systemRole).
+model Role {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  name        String
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  permissions RolePermission[]
+  users       User[]
+
+  @@unique([tenantId, name])
+  @@map("roles")
+}
+
+/// A single (resource, action) grant on a Role. Both columns are constrained to exist in
+/// PermissionCatalog — a tenant can only toggle permissions that the app actually enforces
+/// somewhere via @Permissions(resource, action), never invent new ones.
+model RolePermission {
+  roleId   String            @map("role_id")
+  role     Role              @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  resource String
+  action   String
+  catalog  PermissionCatalog @relation(fields: [resource, action], references: [resource, action])
+
+  @@id([roleId, resource, action])
+  @@map("role_permissions")
+}
+
+/// Fixed, code-owned catalog of every (resource, action) pair a tenant can grant to a
+/// custom Role. Seeded once (see prisma/seed-permission-catalog.ts) from the same
+/// resource/action taxonomy the old iKiotMS-BE permissions.json used — every module's
+/// @Permissions() decorator must reference a pair that exists here.
+model PermissionCatalog {
+  resource String
+  action   String
+  label    String? // human-readable Vietnamese label for the role-management UI
+
+  rolePermissions RolePermission[]
+
+  @@id([resource, action])
+  @@map("permission_catalog")
 }
 
 model UserFcmToken {

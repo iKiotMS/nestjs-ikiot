@@ -1,35 +1,54 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+} from '@nestjs/common';
 import { UserService } from './users.service';
-import { CreateUserDto } from './dto/create-users.dto';
-import { UpdateUserDto } from './dto/update-users.dto';
+import { CreateUserDto } from './dto/create-user.dto';
+import { UpdateUserDto } from './dto/update-user.dto';
+import { Permissions } from '../../common/decorators/permissions.decorator';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import type { AuthUser } from '../../common/types/auth-user.type';
 
-// TODO: apply JwtAuthGuard + PermissionsGuard once auth/tenant are ported (see migration plan, group A).
 @Controller('users')
 export class UserController {
-  constructor(private readonly service: UserService) {}
+  constructor(private readonly usersService: UserService) {}
 
+  @Permissions('users', 'read')
   @Get()
-  findAll(@Query('tenantId') tenantId?: string) {
-    return this.service.findAll(tenantId);
+  findAll(@CurrentUser() user: AuthUser) {
+    return this.usersService.findAll(user.tenantId!);
   }
 
+  @Permissions('users', 'read')
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.service.findOne(id);
+  findOne(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.usersService.findOne(user.tenantId!, id);
   }
 
+  @Permissions('users', 'create')
   @Post()
-  create(@Body() dto: CreateUserDto) {
-    return this.service.create(dto);
+  create(@CurrentUser() user: AuthUser, @Body() dto: CreateUserDto) {
+    return this.usersService.create(user.tenantId!, dto);
   }
 
+  @Permissions('users', 'update')
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateUserDto) {
-    return this.service.update(id, dto);
+  update(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Body() dto: UpdateUserDto,
+  ) {
+    return this.usersService.update(user.tenantId!, id, dto);
   }
 
+  @Permissions('users', 'delete')
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.service.remove(id);
+  remove(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.usersService.remove(user.tenantId!, id);
   }
 }
