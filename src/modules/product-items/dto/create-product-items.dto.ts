@@ -2,9 +2,6 @@ import { IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class CreateProductItemDto {
   @IsString()
-  tenantId: string;
-
-  @IsString()
   productId: string;
 
   @IsString()

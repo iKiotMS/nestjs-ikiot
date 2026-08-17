@@ -1,7 +1,9 @@
-// Seeds the fixed PermissionCatalog every tenant-defined Role draws from. This taxonomy is
-// carried over from iKiotMS-BE's src/config/permissions.json (the union of every
-// resource+action pair actually enforced via authorize() across the old 6 static roles) —
-// it is the app's contract, not tenant-editable data. Run with `prisma db seed`.
+// Seeds the fixed PermissionCatalog every tenant-defined Role draws from. This taxonomy
+// started as iKiotMS-BE's src/config/permissions.json (the union of every resource+action
+// pair listed for the old 6 static roles) and has since grown — see the "added for the
+// NestJS port" notes in CATALOG below. It is the app's contract, not tenant-editable data.
+// Every `@Permissions(resource, action)` in code must have a row here or no role can ever
+// be granted it. Run with `prisma db seed`.
 import { PrismaClient } from '../generated/prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import * as bcrypt from 'bcryptjs';
@@ -221,11 +223,13 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
     label: 'Kho',
   },
   orders: {
-    actions: ['create', 'read', 'update', 'view_all', 'pay_offline'],
+    // 'delete' added for the NestJS port — the generated orders module exposes DELETE.
+    actions: ['create', 'read', 'update', 'delete', 'view_all', 'pay_offline'],
     label: 'Đơn hàng',
   },
   inventory: {
-    actions: ['read', 'update', 'view_all', 'manage'],
+    // 'create'/'delete' added for the NestJS port.
+    actions: ['create', 'read', 'update', 'delete', 'view_all', 'manage'],
     label: 'Tồn kho',
   },
   subscriptions: {
@@ -242,7 +246,8 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
   },
   reports: { actions: ['read', 'export'], label: 'Báo cáo' },
   attendances: {
-    actions: ['create', 'read', 'update', 'read_own'],
+    // 'delete' added for the NestJS port.
+    actions: ['create', 'read', 'update', 'delete', 'read_own'],
     label: 'Chấm công',
   },
   leaveRequests: {
@@ -263,7 +268,18 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
     label: 'Đơn nghỉ phép',
   },
   cash_drawers: {
-    actions: ['open', 'read', 'report', 'finalize', 'read_own'],
+    // 'create'/'update'/'delete' added for the NestJS port — the old system only ever
+    // opened and finalised a session, never edited one directly.
+    actions: [
+      'create',
+      'read',
+      'update',
+      'delete',
+      'open',
+      'report',
+      'finalize',
+      'read_own',
+    ],
     label: 'Ca thu ngân',
   },
   paysheets: {
@@ -284,23 +300,62 @@ const CATALOG: Record<string, { actions: string[]; label: string }> = {
     label: 'Lịch làm việc',
   },
   stock_movement: {
-    actions: ['create', 'read', 'update', 'approve', 'receive', 'cancel'],
+    // 'delete' added for the NestJS port.
+    actions: [
+      'create',
+      'read',
+      'update',
+      'delete',
+      'approve',
+      'receive',
+      'cancel',
+    ],
     label: 'Xuất/nhập kho',
   },
   payrollSettings: {
-    actions: ['create', 'read', 'update'],
+    // 'delete' added for the NestJS port.
+    actions: ['create', 'read', 'update', 'delete'],
     label: 'Cấu hình lương',
   },
   payroll: {
     actions: ['create', 'read', 'update', 'delete'],
     label: 'Kỳ lương',
   },
-  payslips: { actions: ['read_own'], label: 'Phiếu lương' },
+  payslips: {
+    // Only 'read_own' existed before — an employee reading their own payslip. The generated
+    // payslips module is full CRUD (HR issuing/correcting them), hence the rest.
+    actions: ['create', 'read', 'update', 'delete', 'read_own'],
+    label: 'Phiếu lương',
+  },
   holidays: {
     actions: ['create', 'read', 'update', 'delete'],
     label: 'Ngày lễ',
   },
   profile: { actions: ['read'], label: 'Hồ sơ cá nhân' },
+
+  // ── Resources with no equivalent in iKiotMS-BE's permissions.json ──────────────────
+  // These modules had routes but no authorize() call at all in the old system — every
+  // logged-in user could reach them. They get a real resource here so a tenant-defined
+  // role can actually be scoped away from them.
+  customers: {
+    actions: ['create', 'read', 'update', 'delete'],
+    label: 'Khách hàng',
+  },
+  tickets: {
+    actions: ['create', 'read', 'update', 'delete'],
+    label: 'Yêu cầu hỗ trợ',
+  },
+  cash_flows: {
+    // Distinct from cash_drawers: a drawer is one cashier's shift, cash_flows is every
+    // movement of tenant money (payroll payouts, supplier payments, ...). The old system
+    // only ever exposed it read-only under reports ('/stats/cashflow').
+    actions: ['create', 'read', 'update', 'delete'],
+    label: 'Dòng tiền',
+  },
+  ai_chat: {
+    actions: ['create', 'read', 'update', 'delete'],
+    label: 'Lịch sử chat AI',
+  },
 };
 
 async function main() {

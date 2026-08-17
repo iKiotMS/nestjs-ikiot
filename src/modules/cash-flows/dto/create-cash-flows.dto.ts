@@ -2,9 +2,6 @@ import { IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class CreateCashFlowDto {
   @IsString()
-  tenantId: string;
-
-  @IsString()
   flowType: string;
 
   @IsNumber()
@@ -33,10 +30,6 @@ export class CreateCashFlowDto {
   @IsOptional()
   @IsString()
   payrollPeriodId?: string;
-
-  @IsOptional()
-  @IsString()
-  createdById?: string;
 
   @IsOptional()
   @IsString()

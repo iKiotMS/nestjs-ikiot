@@ -1,9 +1,6 @@
 import { IsOptional, IsString } from 'class-validator';
 
 export class CreateProductDto {
-  @IsString()
-  tenantId: string;
-
   @IsOptional()
   @IsString()
   brandId?: string;

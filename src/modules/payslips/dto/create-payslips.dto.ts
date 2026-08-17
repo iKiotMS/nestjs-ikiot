@@ -2,9 +2,6 @@ import { IsDateString, IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class CreatePayslipDto {
   @IsString()
-  tenantId: string;
-
-  @IsString()
   userId: string;
 
   @IsOptional()

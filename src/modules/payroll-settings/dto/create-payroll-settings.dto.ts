@@ -2,9 +2,6 @@ import { IsArray, IsBoolean, IsInt, IsString } from 'class-validator';
 
 export class CreatePayrollSettingDto {
   @IsString()
-  tenantId: string;
-
-  @IsString()
   cycle: string;
 
   @IsInt()

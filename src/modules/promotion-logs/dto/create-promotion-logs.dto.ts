@@ -2,9 +2,6 @@ import { IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class CreatePromotionLogDto {
   @IsString()
-  tenantId: string;
-
-  @IsString()
   promotionId: string;
 
   @IsOptional()
@@ -21,10 +18,6 @@ export class CreatePromotionLogDto {
 
   @IsNumber()
   discountAmount: number;
-
-  @IsOptional()
-  @IsString()
-  createdById?: string;
 
   @IsOptional()
   @IsString()

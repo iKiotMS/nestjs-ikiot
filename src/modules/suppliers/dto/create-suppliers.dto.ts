@@ -2,9 +2,6 @@ import { IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class CreateSupplierDto {
   @IsString()
-  tenantId: string;
-
-  @IsString()
   supplierName: string;
 
   @IsOptional()

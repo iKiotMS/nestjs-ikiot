@@ -14,6 +14,7 @@ import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
 import { OwnerOrAdminGuard } from '../../common/guards/owner-or-admin.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
 @ApiTags('roles')
@@ -25,7 +26,7 @@ export class RolesController {
 
   @Get()
   findAll(@CurrentUser() user: AuthUser) {
-    return this.rolesService.findAll(user.tenantId!);
+    return this.rolesService.findAll(requireTenantId(user));
   }
 
   @Get('permission-catalog')
@@ -35,12 +36,12 @@ export class RolesController {
 
   @Get(':id')
   findOne(@CurrentUser() user: AuthUser, @Param('id') id: string) {
-    return this.rolesService.findOne(user.tenantId!, id);
+    return this.rolesService.findOne(requireTenantId(user), id);
   }
 
   @Post()
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateRoleDto) {
-    return this.rolesService.create(user.tenantId!, dto);
+    return this.rolesService.create(requireTenantId(user), dto);
   }
 
   @Patch(':id')
@@ -49,11 +50,11 @@ export class RolesController {
     @Param('id') id: string,
     @Body() dto: UpdateRoleDto,
   ) {
-    return this.rolesService.update(user.tenantId!, id, dto);
+    return this.rolesService.update(requireTenantId(user), id, dto);
   }
 
   @Delete(':id')
   remove(@CurrentUser() user: AuthUser, @Param('id') id: string) {
-    return this.rolesService.remove(user.tenantId!, id);
+    return this.rolesService.remove(requireTenantId(user), id);
   }
 }

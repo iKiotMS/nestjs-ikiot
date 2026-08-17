@@ -2,9 +2,6 @@ import { IsDateString, IsOptional, IsString } from 'class-validator';
 
 export class CreatePayrollPeriodDto {
   @IsString()
-  tenantId: string;
-
-  @IsString()
   name: string;
 
   @IsDateString()

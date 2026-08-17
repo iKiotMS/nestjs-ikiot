@@ -13,6 +13,7 @@ import type { Response } from 'express';
 import { SubscriptionService } from './subscriptions.service';
 import { UpgradeSubscriptionDto } from './dto/upgrade-subscription.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { requireTenantId } from '../../common/utils/tenant-scope';
 import { Public } from '../../common/decorators/public.decorator';
 import { AdminOnlyGuard } from '../../common/guards/admin-only.guard';
 import type { AuthUser } from '../../common/types/auth-user.type';
@@ -28,7 +29,7 @@ export class SubscriptionController {
   @Post('subscription/free-trial')
   async assignFreeTrial(@CurrentUser() user: AuthUser) {
     const data = await this.subscriptionService.assignFreeTrial(
-      user.tenantId!,
+      requireTenantId(user),
       user.userId,
     );
     return { message: 'Free trial assigned successfully', data };
@@ -37,7 +38,7 @@ export class SubscriptionController {
   @ApiBearerAuth('bearer')
   @Get('subscription/status')
   status(@CurrentUser() user: AuthUser) {
-    return this.subscriptionService.checkTrialStatus(user.tenantId!);
+    return this.subscriptionService.checkTrialStatus(requireTenantId(user));
   }
 
   @ApiBearerAuth('bearer')
@@ -47,7 +48,7 @@ export class SubscriptionController {
     @Body() dto: UpgradeSubscriptionDto,
   ) {
     const data = await this.subscriptionService.initiateUpgrade(
-      user.tenantId!,
+      requireTenantId(user),
       dto.planCode,
     );
     return {
@@ -60,7 +61,9 @@ export class SubscriptionController {
   @ApiBearerAuth('bearer')
   @Post('subscription/renew/initiate')
   async initiateRenewal(@CurrentUser() user: AuthUser) {
-    const data = await this.subscriptionService.initiateRenewal(user.tenantId!);
+    const data = await this.subscriptionService.initiateRenewal(
+      requireTenantId(user),
+    );
     return {
       message:
         'Renewal initiated. Scan QR or transfer with the reference code.',

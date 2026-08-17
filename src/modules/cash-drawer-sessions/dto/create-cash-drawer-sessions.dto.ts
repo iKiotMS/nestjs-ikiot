@@ -2,9 +2,6 @@ import { IsDateString, IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class CreateCashDrawerSessionDto {
   @IsString()
-  tenantId: string;
-
-  @IsString()
   branchId: string;
 
   @IsDateString()

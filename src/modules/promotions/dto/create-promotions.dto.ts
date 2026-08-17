@@ -1,9 +1,13 @@
-import { IsBoolean, IsDateString, IsInt, IsNumber, IsOptional, IsString } from 'class-validator';
+import {
+  IsBoolean,
+  IsDateString,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsString,
+} from 'class-validator';
 
 export class CreatePromotionDto {
-  @IsString()
-  tenantId: string;
-
   @IsString()
   promoName: string;
 

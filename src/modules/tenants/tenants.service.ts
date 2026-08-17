@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateTenantDto } from './dto/create-tenants.dto';
 import { UpdateTenantDto } from './dto/update-tenants.dto';
@@ -8,22 +8,29 @@ export class TenantService {
   constructor(private readonly prisma: PrismaService) {}
 
   findAll() {
-    return this.prisma.tenant.findMany(undefined);
+    return this.prisma.tenant.findMany({ where: {} });
   }
 
-  findOne(id: string) {
-    return this.prisma.tenant.findUniqueOrThrow({ where: { id } });
+  // findFirst + explicit throw rather than findFirstOrThrow: Prisma's own not-found error
+  // isn't an HttpException, so Nest turns it into a 500. A row in another tenant must be
+  // indistinguishable from one that doesn't exist — 404 either way, never 403.
+  async findOne(id: string) {
+    const found = await this.prisma.tenant.findFirst({ where: { id } });
+    if (!found) throw new NotFoundException('Tenant not found');
+    return found;
   }
 
   create(data: CreateTenantDto) {
-    return this.prisma.tenant.create({ data: data as any });
+    return this.prisma.tenant.create({ data: { ...data } });
   }
 
-  update(id: string, data: UpdateTenantDto) {
-    return this.prisma.tenant.update({ where: { id }, data: data as any });
+  async update(id: string, data: UpdateTenantDto) {
+    await this.findOne(id);
+    return this.prisma.tenant.update({ where: { id }, data });
   }
 
-  remove(id: string) {
+  async remove(id: string) {
+    await this.findOne(id);
     return this.prisma.tenant.delete({ where: { id } });
   }
 }

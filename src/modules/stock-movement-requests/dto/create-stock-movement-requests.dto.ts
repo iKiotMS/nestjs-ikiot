@@ -2,9 +2,6 @@ import { IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class CreateStockMovementRequestDto {
   @IsString()
-  tenantId: string;
-
-  @IsString()
   movementType: string;
 
   @IsString()
@@ -29,9 +26,6 @@ export class CreateStockMovementRequestDto {
   @IsOptional()
   @IsString()
   toWarehouseId?: string;
-
-  @IsString()
-  createdById: string;
 
   @IsNumber()
   totalPrice: number;

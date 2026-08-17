@@ -1,12 +1,6 @@
 import { IsDateString, IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class CreateLeaveRequestDto {
-  @IsString()
-  tenantId: string;
-
-  @IsString()
-  userId: string;
-
   @IsOptional()
   @IsString()
   approvedById?: string;

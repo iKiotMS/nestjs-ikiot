@@ -4,6 +4,7 @@ import { AuditLogService } from './audit-logs.service';
 import { QueryAuditLogDto } from './dto/query-audit-log.dto';
 import { OwnerOrAdminGuard } from '../../common/guards/owner-or-admin.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
 // A tenant's own audit trail — owner-only (staff aren't given oversight of the whole
@@ -18,6 +19,6 @@ export class TenantAuditLogController {
 
   @Get()
   findAll(@CurrentUser() user: AuthUser, @Query() query: QueryAuditLogDto) {
-    return this.service.findForTenant(user.tenantId!, query);
+    return this.service.findForTenant(requireTenantId(user), query);
   }
 }

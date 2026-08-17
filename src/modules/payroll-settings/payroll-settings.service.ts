@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreatePayrollSettingDto } from './dto/create-payroll-settings.dto';
 import { UpdatePayrollSettingDto } from './dto/update-payroll-settings.dto';
@@ -8,22 +8,37 @@ export class PayrollSettingService {
   constructor(private readonly prisma: PrismaService) {}
 
   findAll(tenantId?: string) {
-    return this.prisma.payrollSetting.findMany(tenantId ? { where: { tenantId } } : undefined);
+    return this.prisma.payrollSetting.findMany({
+      where: { ...(tenantId ? { tenantId } : {}) },
+    });
   }
 
-  findOne(id: string) {
-    return this.prisma.payrollSetting.findUniqueOrThrow({ where: { id } });
+  // findFirst + explicit throw rather than findFirstOrThrow: Prisma's own not-found error
+  // isn't an HttpException, so Nest turns it into a 500. A row in another tenant must be
+  // indistinguishable from one that doesn't exist — 404 either way, never 403.
+  async findOne(tenantId: string | undefined, id: string) {
+    const found = await this.prisma.payrollSetting.findFirst({
+      where: { id, ...(tenantId ? { tenantId } : {}) },
+    });
+    if (!found) throw new NotFoundException('PayrollSetting not found');
+    return found;
   }
 
-  create(data: CreatePayrollSettingDto) {
-    return this.prisma.payrollSetting.create({ data: data as any });
+  create(tenantId: string, data: CreatePayrollSettingDto) {
+    return this.prisma.payrollSetting.create({ data: { ...data, tenantId } });
   }
 
-  update(id: string, data: UpdatePayrollSettingDto) {
-    return this.prisma.payrollSetting.update({ where: { id }, data: data as any });
+  async update(
+    tenantId: string | undefined,
+    id: string,
+    data: UpdatePayrollSettingDto,
+  ) {
+    await this.findOne(tenantId, id);
+    return this.prisma.payrollSetting.update({ where: { id }, data });
   }
 
-  remove(id: string) {
+  async remove(tenantId: string | undefined, id: string) {
+    await this.findOne(tenantId, id);
     return this.prisma.payrollSetting.delete({ where: { id } });
   }
 }

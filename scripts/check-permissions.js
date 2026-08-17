@@ -1,0 +1,78 @@
+// Guards against the one failure mode the type system can't catch: a
+// @Permissions('resource', 'action') in a controller that has no matching row in
+// prisma/seed.ts's CATALOG. RolePermission has a real FK into PermissionCatalog, so such a
+// pair can never be granted to any role — the route silently becomes reachable only by
+// ADMIN/TENANT_OWNER (who short-circuit PermissionsGuard), which looks like a permissions
+// bug long after the fact. Run it after touching either side.
+//
+//   node scripts/check-permissions.js
+
+const fs = require('fs');
+const path = require('path');
+
+const ROOT = path.resolve(__dirname, '..');
+
+const seed = fs.readFileSync(path.join(ROOT, 'prisma', 'seed.ts'), 'utf8');
+const catalogSrc = seed.slice(seed.indexOf('const CATALOG'));
+const catalog = new Set();
+// Locate each `  <resource>: {` key first, then read only up to the next one. Matching a
+// whole `{ ... }` block with a lazy quantifier looks equivalent but is not: the catalog
+// mixes multi-line entries with single-line ones (`reports: { actions: [...] },`), and a
+// single-line entry has no `\n  },` of its own to stop at, so the match runs on and
+// swallows the resource that follows it. That silently dropped two resources when this
+// script was first written and reported their routes as uncatalogued.
+const starts = [...catalogSrc.matchAll(/^ {2}([A-Za-z_][A-Za-z0-9_]*):\s*\{/gm)];
+for (let i = 0; i < starts.length; i++) {
+  const resource = starts[i][1];
+  const body = catalogSrc.slice(
+    starts[i].index,
+    i + 1 < starts.length ? starts[i + 1].index : catalogSrc.length,
+  );
+  const actionsBlock = body.match(/actions:\s*\[([\s\S]*?)\]/);
+  if (!actionsBlock) continue;
+  // Skip `//` comment lines so a quoted action name inside a comment isn't counted.
+  const actionsSrc = actionsBlock[1]
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('//'))
+    .join('\n');
+  for (const a of actionsSrc.matchAll(/'([^']+)'/g)) {
+    catalog.add(`${resource}:${a[1]}`);
+  }
+}
+
+const used = new Map(); // "resource:action" -> [files]
+function walk(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) walk(full);
+    else if (entry.name.endsWith('.ts')) {
+      const src = fs.readFileSync(full, 'utf8');
+      for (const m of src.matchAll(/@Permissions\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)/g)) {
+        const key = `${m[1]}:${m[2]}`;
+        if (!used.has(key)) used.set(key, []);
+        used.get(key).push(path.relative(ROOT, full));
+      }
+    }
+  }
+}
+walk(path.join(ROOT, 'src'));
+
+const missing = [...used.keys()].filter((k) => !catalog.has(k)).sort();
+const unused = [...catalog].filter((k) => !used.has(k)).sort();
+
+console.log(`Catalog pairs: ${catalog.size}`);
+console.log(`@Permissions pairs in code: ${used.size}`);
+
+if (missing.length) {
+  console.error('\nMISSING from CATALOG (no role can ever be granted these):');
+  for (const k of missing) console.error(`  ${k}   <- ${[...new Set(used.get(k))].join(', ')}`);
+}
+
+// Not an error: the catalog intentionally carries pairs whose routes aren't ported yet.
+if (unused.length) {
+  console.log(`\nIn catalog but not yet used by any route (${unused.length}) — expected while modules are still unported:`);
+  console.log('  ' + unused.join('\n  '));
+}
+
+if (missing.length) process.exit(1);
+console.log('\nOK — every @Permissions pair exists in the catalog.');

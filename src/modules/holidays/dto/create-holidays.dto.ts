@@ -1,9 +1,6 @@
 import { IsBoolean, IsDateString, IsOptional, IsString } from 'class-validator';
 
 export class CreateHolidayDto {
-  @IsString()
-  tenantId: string;
-
   @IsDateString()
   date: string;
 

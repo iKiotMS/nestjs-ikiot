@@ -2,9 +2,6 @@ import { IsInt, IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class CreateWarehouseDto {
   @IsString()
-  tenantId: string;
-
-  @IsString()
   name: string;
 
   @IsString()

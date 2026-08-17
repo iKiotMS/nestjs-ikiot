@@ -1,9 +1,12 @@
-import { IsDateString, IsInt, IsNumber, IsOptional, IsString } from 'class-validator';
+import {
+  IsDateString,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsString,
+} from 'class-validator';
 
 export class CreateAttendanceDto {
-  @IsString()
-  tenantId: string;
-
   @IsString()
   userId: string;
 

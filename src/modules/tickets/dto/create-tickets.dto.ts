@@ -5,13 +5,7 @@ export class CreateTicketDto {
   ticketId: string;
 
   @IsString()
-  tenantId: string;
-
-  @IsString()
   tenantName: string;
-
-  @IsString()
-  userId: string;
 
   @IsString()
   title: string;

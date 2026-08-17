@@ -1,9 +1,6 @@
 import { IsDateString, IsOptional, IsString } from 'class-validator';
 
 export class CreateWorkingScheduleDto {
-  @IsString()
-  tenantId: string;
-
   @IsOptional()
   @IsString()
   managedById?: string;
@@ -14,10 +11,6 @@ export class CreateWorkingScheduleDto {
   @IsOptional()
   @IsString()
   shiftTemplateId?: string;
-
-  @IsOptional()
-  @IsString()
-  createdById?: string;
 
   @IsOptional()
   @IsDateString()

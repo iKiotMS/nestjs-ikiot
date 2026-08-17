@@ -2,9 +2,6 @@ import { IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class CreateOrderDto {
   @IsString()
-  tenantId: string;
-
-  @IsString()
   branchId: string;
 
   @IsString()
@@ -12,9 +9,6 @@ export class CreateOrderDto {
 
   @IsString()
   status: string;
-
-  @IsString()
-  userId: string;
 
   @IsString()
   paymentMethod: string;

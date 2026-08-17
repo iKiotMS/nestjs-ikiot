@@ -1,37 +1,78 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+} from '@nestjs/common';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CustomerService } from './customers.service';
 import { CreateCustomerDto } from './dto/create-customers.dto';
 import { UpdateCustomerDto } from './dto/update-customers.dto';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Permissions } from '../../common/decorators/permissions.decorator';
+import {
+  requireTenantId,
+  resolveTenantScope,
+} from '../../common/utils/tenant-scope';
+import type { AuthUser } from '../../common/types/auth-user.type';
 
-// TODO: apply JwtAuthGuard + PermissionsGuard once auth/tenant are ported (see migration plan, group A).
+// Generated CRUD, not a real port yet: gated by the global JwtAuthGuard, scoped to the
+// caller's tenant and permission-checked against the 'customers' catalog resource — but
+// the service underneath is plain Prisma CRUD, not the real business logic.
 @ApiTags('customers')
+@ApiBearerAuth('bearer')
 @Controller('customers')
 export class CustomerController {
   constructor(private readonly service: CustomerService) {}
 
+  @Permissions('customers', 'read')
   @Get()
-  findAll(@Query('tenantId') tenantId?: string) {
-    return this.service.findAll(tenantId);
+  findAll(@CurrentUser() user: AuthUser, @Query('tenantId') tenantId?: string) {
+    return this.service.findAll(resolveTenantScope(user, tenantId));
   }
 
+  @Permissions('customers', 'read')
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.service.findOne(id);
+  findOne(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Query('tenantId') tenantId?: string,
+  ) {
+    return this.service.findOne(resolveTenantScope(user, tenantId), id);
   }
 
+  @Permissions('customers', 'create')
   @Post()
-  create(@Body() dto: CreateCustomerDto) {
-    return this.service.create(dto);
+  create(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: CreateCustomerDto,
+    @Query('tenantId') tenantId?: string,
+  ) {
+    return this.service.create(requireTenantId(user, tenantId), dto);
   }
 
+  @Permissions('customers', 'update')
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateCustomerDto) {
-    return this.service.update(id, dto);
+  update(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Body() dto: UpdateCustomerDto,
+    @Query('tenantId') tenantId?: string,
+  ) {
+    return this.service.update(resolveTenantScope(user, tenantId), id, dto);
   }
 
+  @Permissions('customers', 'delete')
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.service.remove(id);
+  remove(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Query('tenantId') tenantId?: string,
+  ) {
+    return this.service.remove(resolveTenantScope(user, tenantId), id);
   }
 }

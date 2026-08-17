@@ -1,9 +1,12 @@
-import { IsArray, IsInt, IsNumber, IsOptional, IsString } from 'class-validator';
+import {
+  IsArray,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsString,
+} from 'class-validator';
 
 export class CreateBranchDto {
-  @IsString()
-  tenantId: string;
-
   @IsString()
   name: string;
 

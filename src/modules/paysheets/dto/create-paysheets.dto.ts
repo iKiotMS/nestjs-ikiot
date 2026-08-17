@@ -2,13 +2,6 @@ import { IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class CreatePaysheetDto {
   @IsString()
-  tenantId: string;
-
-  @IsOptional()
-  @IsString()
-  createdById?: string;
-
-  @IsString()
   name: string;
 
   @IsString()

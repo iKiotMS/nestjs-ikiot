@@ -13,6 +13,7 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
 @ApiTags('users')
@@ -24,19 +25,19 @@ export class UserController {
   @Permissions('users', 'read')
   @Get()
   findAll(@CurrentUser() user: AuthUser) {
-    return this.usersService.findAll(user.tenantId!);
+    return this.usersService.findAll(requireTenantId(user));
   }
 
   @Permissions('users', 'read')
   @Get(':id')
   findOne(@CurrentUser() user: AuthUser, @Param('id') id: string) {
-    return this.usersService.findOne(user.tenantId!, id);
+    return this.usersService.findOne(requireTenantId(user), id);
   }
 
   @Permissions('users', 'create')
   @Post()
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateUserDto) {
-    return this.usersService.create(user.tenantId!, dto);
+    return this.usersService.create(requireTenantId(user), dto);
   }
 
   @Permissions('users', 'update')
@@ -46,12 +47,12 @@ export class UserController {
     @Param('id') id: string,
     @Body() dto: UpdateUserDto,
   ) {
-    return this.usersService.update(user.tenantId!, id, dto);
+    return this.usersService.update(requireTenantId(user), id, dto);
   }
 
   @Permissions('users', 'delete')
   @Delete(':id')
   remove(@CurrentUser() user: AuthUser, @Param('id') id: string) {
-    return this.usersService.remove(user.tenantId!, id);
+    return this.usersService.remove(requireTenantId(user), id);
   }
 }

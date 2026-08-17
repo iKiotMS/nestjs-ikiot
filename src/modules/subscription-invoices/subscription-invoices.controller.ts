@@ -2,6 +2,7 @@ import { Controller, Get, Param, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { SubscriptionInvoiceService } from './subscription-invoices.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { requireTenantId } from '../../common/utils/tenant-scope';
 import { AdminOnlyGuard } from '../../common/guards/admin-only.guard';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
@@ -13,7 +14,7 @@ export class SubscriptionInvoiceController {
 
   @Get('invoices')
   listOwn(@CurrentUser() user: AuthUser) {
-    return this.service.listForTenant(user.tenantId!);
+    return this.service.listForTenant(requireTenantId(user));
   }
 
   @Get('invoice/:invoiceId/status')
@@ -21,7 +22,7 @@ export class SubscriptionInvoiceController {
     @CurrentUser() user: AuthUser,
     @Param('invoiceId') invoiceId: string,
   ) {
-    return this.service.getStatus(user.tenantId!, invoiceId);
+    return this.service.getStatus(requireTenantId(user), invoiceId);
   }
 
   @UseGuards(AdminOnlyGuard)
