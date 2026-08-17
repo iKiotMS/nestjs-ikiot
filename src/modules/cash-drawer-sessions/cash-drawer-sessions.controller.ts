@@ -1,9 +1,11 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { CashDrawerSessionService } from './cash-drawer-sessions.service';
 import { CreateCashDrawerSessionDto } from './dto/create-cash-drawer-sessions.dto';
 import { UpdateCashDrawerSessionDto } from './dto/update-cash-drawer-sessions.dto';
 
 // TODO: apply JwtAuthGuard + PermissionsGuard once auth/tenant are ported (see migration plan, group A).
+@ApiTags('cash-drawer-sessions')
 @Controller('cash-drawer-sessions')
 export class CashDrawerSessionController {
   constructor(private readonly service: CashDrawerSessionService) {}

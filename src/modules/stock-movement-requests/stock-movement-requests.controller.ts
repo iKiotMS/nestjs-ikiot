@@ -1,9 +1,11 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { StockMovementRequestService } from './stock-movement-requests.service';
 import { CreateStockMovementRequestDto } from './dto/create-stock-movement-requests.dto';
 import { UpdateStockMovementRequestDto } from './dto/update-stock-movement-requests.dto';
 
 // TODO: apply JwtAuthGuard + PermissionsGuard once auth/tenant are ported (see migration plan, group A).
+@ApiTags('stock-movement-requests')
 @Controller('stock-movement-requests')
 export class StockMovementRequestController {
   constructor(private readonly service: StockMovementRequestService) {}

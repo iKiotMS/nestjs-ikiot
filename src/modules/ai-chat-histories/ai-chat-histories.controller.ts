@@ -1,9 +1,11 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { AIChatHistoryService } from './ai-chat-histories.service';
 import { CreateAIChatHistoryDto } from './dto/create-ai-chat-histories.dto';
 import { UpdateAIChatHistoryDto } from './dto/update-ai-chat-histories.dto';
 
 // TODO: apply JwtAuthGuard + PermissionsGuard once auth/tenant are ported (see migration plan, group A).
+@ApiTags('ai-chat-histories')
 @Controller('ai-chat-histories')
 export class AIChatHistoryController {
   constructor(private readonly service: AIChatHistoryService) {}

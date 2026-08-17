@@ -1,9 +1,11 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { LeaveRequestService } from './leave-requests.service';
 import { CreateLeaveRequestDto } from './dto/create-leave-requests.dto';
 import { UpdateLeaveRequestDto } from './dto/update-leave-requests.dto';
 
 // TODO: apply JwtAuthGuard + PermissionsGuard once auth/tenant are ported (see migration plan, group A).
+@ApiTags('leave-requests')
 @Controller('leave-requests')
 export class LeaveRequestController {
   constructor(private readonly service: LeaveRequestService) {}

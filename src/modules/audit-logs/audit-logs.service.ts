@@ -1,29 +1,71 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '../../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CreateAuditLogDto } from './dto/create-audit-logs.dto';
-import { UpdateAuditLogDto } from './dto/update-audit-logs.dto';
+import { QueryAuditLogDto } from './dto/query-audit-log.dto';
 
+// AuditLog rows are written only by AuditInterceptor (src/common/interceptors/audit.interceptor.ts)
+// — there is deliberately no create/update/delete here, same as iKiotMS-BE's audit module
+// (a plain controller with one read endpoint; the writer was a separate global middleware).
 @Injectable()
 export class AuditLogService {
   constructor(private readonly prisma: PrismaService) {}
 
-  findAll(tenantId?: string) {
-    return this.prisma.auditLog.findMany(tenantId ? { where: { tenantId } } : undefined);
+  /** Platform-wide, unscoped — GET /admin/audit-logs (AdminOnlyGuard). */
+  findAllAdmin(query: QueryAuditLogDto) {
+    return this.query(this.buildWhere(query), query);
   }
 
-  findOne(id: string) {
-    return this.prisma.auditLog.findUniqueOrThrow({ where: { id } });
+  /** One tenant's own trail — GET /audit-logs (OwnerOrAdminGuard). */
+  findForTenant(tenantId: string, query: QueryAuditLogDto) {
+    return this.query({ ...this.buildWhere(query), tenantId }, query);
   }
 
-  create(data: CreateAuditLogDto) {
-    return this.prisma.auditLog.create({ data: data as any });
+  private buildWhere(query: QueryAuditLogDto): Prisma.AuditLogWhereInput {
+    const where: Prisma.AuditLogWhereInput = {};
+    if (query.user) {
+      where.OR = [
+        { userName: { contains: query.user, mode: 'insensitive' } },
+        { userEmail: { contains: query.user, mode: 'insensitive' } },
+      ];
+    }
+    if (query.action && query.action.toLowerCase() !== 'all') {
+      where.action = query.action.toUpperCase();
+    }
+    if (query.resource && query.resource.toLowerCase() !== 'all') {
+      where.resource = { contains: query.resource, mode: 'insensitive' };
+    }
+    if (query.startDate || query.endDate) {
+      where.createdAt = {};
+      if (query.startDate) where.createdAt.gte = new Date(query.startDate);
+      if (query.endDate) {
+        const end = new Date(query.endDate);
+        end.setHours(23, 59, 59, 999);
+        where.createdAt.lte = end;
+      }
+    }
+    return where;
   }
 
-  update(id: string, data: UpdateAuditLogDto) {
-    return this.prisma.auditLog.update({ where: { id }, data: data as any });
-  }
+  private async query(
+    where: Prisma.AuditLogWhereInput,
+    query: QueryAuditLogDto,
+  ) {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
 
-  remove(id: string) {
-    return this.prisma.auditLog.delete({ where: { id } });
+    const [data, total] = await Promise.all([
+      this.prisma.auditLog.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.auditLog.count({ where }),
+    ]);
+
+    return {
+      data,
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
   }
 }

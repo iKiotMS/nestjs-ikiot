@@ -45,6 +45,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       permissions: new Set(
         user.role?.permissions.map((p) => `${p.resource}:${p.action}`) ?? [],
       ),
+      email: user.email,
+      displayName: user.profileFirstName
+        ? `${user.profileFirstName} ${user.profileLastName ?? ''}`.trim()
+        : null,
+      phoneNumber: user.phoneNumber,
     };
   }
 }

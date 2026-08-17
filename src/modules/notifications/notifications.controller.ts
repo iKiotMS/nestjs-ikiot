@@ -1,35 +1,76 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+} from '@nestjs/common';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { NotificationService } from './notifications.service';
-import { CreateNotificationDto } from './dto/create-notifications.dto';
-import { UpdateNotificationDto } from './dto/update-notifications.dto';
+import { ListNotificationsDto } from './dto/list-notifications.dto';
+import { DeviceTokenDto } from './dto/device-token.dto';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import type { AuthUser } from '../../common/types/auth-user.type';
 
-// TODO: apply JwtAuthGuard + PermissionsGuard once auth/tenant are ported (see migration plan, group A).
+// Own inbox only — every method scopes to the caller (tenant + recipient, see
+// NotificationService.inboxFilter). There is no cross-user/admin listing here; use
+// notify() from another service to write, this controller only ever reads/acknowledges.
+@ApiTags('notifications')
+@ApiBearerAuth('bearer')
 @Controller('notifications')
 export class NotificationController {
   constructor(private readonly service: NotificationService) {}
 
   @Get()
-  findAll(@Query('tenantId') tenantId?: string) {
-    return this.service.findAll(tenantId);
+  list(@CurrentUser() user: AuthUser, @Query() query: ListNotificationsDto) {
+    return this.service.listInbox(user, query.page ?? 1, query.limit ?? 20);
   }
 
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.service.findOne(id);
+  @Get('unread-count')
+  unreadCount(@CurrentUser() user: AuthUser) {
+    return this.service.unreadCount(user);
   }
 
-  @Post()
-  create(@Body() dto: CreateNotificationDto) {
-    return this.service.create(dto);
+  @Patch('read-all')
+  markAllRead(@CurrentUser() user: AuthUser) {
+    return this.service.markAllRead(user);
   }
 
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateNotificationDto) {
-    return this.service.update(id, dto);
+  @Patch(':id/read')
+  markRead(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.service.markRead(user, id);
+  }
+
+  @Post('device-token')
+  registerDeviceToken(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: DeviceTokenDto,
+  ) {
+    return this.service.registerDeviceToken(
+      user.userId,
+      dto.token,
+      dto.userAgent,
+    );
+  }
+
+  @Delete('device-token')
+  removeDeviceToken(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: DeviceTokenDto,
+  ) {
+    return this.service.removeDeviceToken(user.userId, dto.token);
+  }
+
+  @Delete()
+  deleteAll(@CurrentUser() user: AuthUser) {
+    return this.service.deleteAll(user);
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.service.remove(id);
+  deleteOne(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.service.deleteOne(user, id);
   }
 }

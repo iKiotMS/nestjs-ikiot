@@ -1,9 +1,11 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { BranchService } from './branches.service';
 import { CreateBranchDto } from './dto/create-branches.dto';
 import { UpdateBranchDto } from './dto/update-branches.dto';
 
 // TODO: apply JwtAuthGuard + PermissionsGuard once auth/tenant are ported (see migration plan, group A).
+@ApiTags('branches')
 @Controller('branches')
 export class BranchController {
   constructor(private readonly service: BranchService) {}

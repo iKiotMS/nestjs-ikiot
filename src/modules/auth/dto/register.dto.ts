@@ -13,6 +13,12 @@ export class RegisterDto {
   @MinLength(6)
   password: string;
 
+  // Verified against OtpService before the tenant/owner are created — see
+  // AuthService.register. In dev without ESMS_API_KEY/ESMS_SECRET_KEY configured, the
+  // code is logged to the server console instead of being sent as a real SMS.
+  @IsString()
+  otpCode: string;
+
   @IsOptional()
   @IsEmail()
   email?: string;

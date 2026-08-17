@@ -8,6 +8,7 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { RolesService } from './roles.service';
 import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
@@ -15,6 +16,8 @@ import { OwnerOrAdminGuard } from '../../common/guards/owner-or-admin.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
+@ApiTags('roles')
+@ApiBearerAuth('bearer')
 @UseGuards(OwnerOrAdminGuard)
 @Controller('roles')
 export class RolesController {

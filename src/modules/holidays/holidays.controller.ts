@@ -1,9 +1,11 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { HolidayService } from './holidays.service';
 import { CreateHolidayDto } from './dto/create-holidays.dto';
 import { UpdateHolidayDto } from './dto/update-holidays.dto';
 
 // TODO: apply JwtAuthGuard + PermissionsGuard once auth/tenant are ported (see migration plan, group A).
+@ApiTags('holidays')
 @Controller('holidays')
 export class HolidayController {
   constructor(private readonly service: HolidayService) {}

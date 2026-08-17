@@ -1,9 +1,11 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { BrandService } from './brands.service';
 import { CreateBrandDto } from './dto/create-brands.dto';
 import { UpdateBrandDto } from './dto/update-brands.dto';
 
 // TODO: apply JwtAuthGuard + PermissionsGuard once auth/tenant are ported (see migration plan, group A).
+@ApiTags('brands')
 @Controller('brands')
 export class BrandController {
   constructor(private readonly service: BrandService) {}

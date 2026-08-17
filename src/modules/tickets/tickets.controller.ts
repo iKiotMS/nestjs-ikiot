@@ -1,9 +1,11 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { TicketService } from './tickets.service';
 import { CreateTicketDto } from './dto/create-tickets.dto';
 import { UpdateTicketDto } from './dto/update-tickets.dto';
 
 // TODO: apply JwtAuthGuard + PermissionsGuard once auth/tenant are ported (see migration plan, group A).
+@ApiTags('tickets')
 @Controller('tickets')
 export class TicketController {
   constructor(private readonly service: TicketService) {}

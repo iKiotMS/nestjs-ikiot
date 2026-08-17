@@ -1,29 +1,39 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CreateSubscriptionInvoiceDto } from './dto/create-subscription-invoices.dto';
-import { UpdateSubscriptionInvoiceDto } from './dto/update-subscription-invoices.dto';
 
+// Read-only from this module's own controller — invoices are only ever written by
+// SubscriptionService (create on upgrade/renew initiate, mark PAID on webhook), which
+// talks to the SubscriptionInvoice table directly via PrismaService rather than through
+// this service, matching how iKiotMS-BE's SubscriptionService used the Mongoose model
+// directly instead of going through a separate abstraction for writes.
 @Injectable()
 export class SubscriptionInvoiceService {
   constructor(private readonly prisma: PrismaService) {}
 
-  findAll(tenantId?: string) {
-    return this.prisma.subscriptionInvoice.findMany(tenantId ? { where: { tenantId } } : undefined);
+  listForTenant(tenantId: string) {
+    return this.prisma.subscriptionInvoice.findMany({
+      where: { tenantId },
+      include: { plan: { select: { planName: true, planCode: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    });
   }
 
-  findOne(id: string) {
-    return this.prisma.subscriptionInvoice.findUniqueOrThrow({ where: { id } });
+  listAll() {
+    return this.prisma.subscriptionInvoice.findMany({
+      include: {
+        plan: { select: { planName: true, planCode: true } },
+        tenant: { select: { name: true, phoneNumber: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
   }
 
-  create(data: CreateSubscriptionInvoiceDto) {
-    return this.prisma.subscriptionInvoice.create({ data: data as any });
-  }
-
-  update(id: string, data: UpdateSubscriptionInvoiceDto) {
-    return this.prisma.subscriptionInvoice.update({ where: { id }, data: data as any });
-  }
-
-  remove(id: string) {
-    return this.prisma.subscriptionInvoice.delete({ where: { id } });
+  async getStatus(tenantId: string, invoiceId: string) {
+    const invoice = await this.prisma.subscriptionInvoice.findFirst({
+      where: { id: invoiceId, tenantId },
+    });
+    if (!invoice) throw new NotFoundException('Invoice not found');
+    return { status: invoice.status, paidAt: invoice.paidAt };
   }
 }

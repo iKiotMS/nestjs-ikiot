@@ -1,9 +1,11 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { ShiftTemplateService } from './shift-templates.service';
 import { CreateShiftTemplateDto } from './dto/create-shift-templates.dto';
 import { UpdateShiftTemplateDto } from './dto/update-shift-templates.dto';
 
 // TODO: apply JwtAuthGuard + PermissionsGuard once auth/tenant are ported (see migration plan, group A).
+@ApiTags('shift-templates')
 @Controller('shift-templates')
 export class ShiftTemplateController {
   constructor(private readonly service: ShiftTemplateService) {}

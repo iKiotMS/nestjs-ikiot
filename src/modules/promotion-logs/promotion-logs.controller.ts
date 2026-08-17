@@ -1,9 +1,11 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { PromotionLogService } from './promotion-logs.service';
 import { CreatePromotionLogDto } from './dto/create-promotion-logs.dto';
 import { UpdatePromotionLogDto } from './dto/update-promotion-logs.dto';
 
 // TODO: apply JwtAuthGuard + PermissionsGuard once auth/tenant are ported (see migration plan, group A).
+@ApiTags('promotion-logs')
 @Controller('promotion-logs')
 export class PromotionLogController {
   constructor(private readonly service: PromotionLogService) {}

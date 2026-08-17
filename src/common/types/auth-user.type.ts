@@ -12,4 +12,9 @@ export interface AuthUser {
   warehouseId: string | null;
   /** `"<resource>:<action>"` set, empty for ADMIN/TENANT_OWNER (those short-circuit before this is checked). */
   permissions: ReadonlySet<string>;
+  /** Carried along only so AuditInterceptor doesn't need a second query for the common
+   * (already-authenticated) case — not used by any permission check. */
+  email: string | null;
+  displayName: string | null;
+  phoneNumber: string;
 }

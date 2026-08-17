@@ -1,11 +1,16 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { APP_GUARD } from '@nestjs/core';
+import { ScheduleModule } from '@nestjs/schedule';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
+import { PrismaService } from './prisma/prisma.service';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { PermissionsGuard } from './common/guards/permissions.guard';
+import { AuditInterceptor } from './common/interceptors/audit.interceptor';
+import { RealtimeModule } from './common/realtime/realtime.module';
+import { SubscriptionAuditTemplate } from './modules/subscriptions/subscription.audit-template';
 
 import { AuthModule } from './modules/auth/auth.module';
 import { RolesModule } from './modules/roles/roles.module';
@@ -46,7 +51,9 @@ import { WorkingScheduleModule } from './modules/working-schedules/working-sched
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    ScheduleModule.forRoot(),
     PrismaModule,
+    RealtimeModule,
     AuthModule,
     RolesModule,
     AIChatHistoryModule,
@@ -89,6 +96,17 @@ import { WorkingScheduleModule } from './modules/working-schedules/working-sched
     // Order matters: JwtAuthGuard populates request.user before PermissionsGuard reads it.
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
+    // Composition root for AuditInterceptor's domain-specific descriptors — add one
+    // inject entry per module that gets its own `*.audit-template.ts` from here on.
+    // AuditInterceptor itself must stay generic; see CLAUDE.md "Audit logging".
+    {
+      provide: APP_INTERCEPTOR,
+      useFactory: (
+        prisma: PrismaService,
+        subscriptionAuditTemplate: SubscriptionAuditTemplate,
+      ) => new AuditInterceptor(prisma, [subscriptionAuditTemplate]),
+      inject: [PrismaService, SubscriptionAuditTemplate],
+    },
   ],
 })
 export class AppModule {}

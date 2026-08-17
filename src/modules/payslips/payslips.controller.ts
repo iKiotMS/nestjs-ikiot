@@ -1,9 +1,11 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { PayslipService } from './payslips.service';
 import { CreatePayslipDto } from './dto/create-payslips.dto';
 import { UpdatePayslipDto } from './dto/update-payslips.dto';
 
 // TODO: apply JwtAuthGuard + PermissionsGuard once auth/tenant are ported (see migration plan, group A).
+@ApiTags('payslips')
 @Controller('payslips')
 export class PayslipController {
   constructor(private readonly service: PayslipService) {}

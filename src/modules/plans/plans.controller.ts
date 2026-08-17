@@ -1,35 +1,16 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Controller, Get } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { PlanService } from './plans.service';
-import { CreatePlanDto } from './dto/create-plans.dto';
-import { UpdatePlanDto } from './dto/update-plans.dto';
+import { Public } from '../../common/decorators/public.decorator';
 
-// TODO: apply JwtAuthGuard + PermissionsGuard once auth/tenant are ported (see migration plan, group A).
+@ApiTags('plans')
 @Controller('plans')
 export class PlanController {
   constructor(private readonly service: PlanService) {}
 
+  @Public()
   @Get()
   findAll() {
-    return this.service.findAll();
-  }
-
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.service.findOne(id);
-  }
-
-  @Post()
-  create(@Body() dto: CreatePlanDto) {
-    return this.service.create(dto);
-  }
-
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdatePlanDto) {
-    return this.service.update(id, dto);
-  }
-
-  @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.service.remove(id);
+    return this.service.listActive();
   }
 }
