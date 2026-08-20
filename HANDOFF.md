@@ -138,6 +138,8 @@ Không thêm module mới. Đây là đợt dọn: 5 lỗ hổng/thiếu sót th
 55. **Categories: bỏ N+1** — breadcrumb trong `findOne` và `assertNoCycle` mỗi cái query 1 lần/tầng (tối đa 20 query cho 1 request). Giờ nạp cả cây 1 query rồi đi bộ trong bộ nhớ, giống `findTree` vốn đã làm vậy.
 56. **Cron: bỏ N+1** — `sendExpiryReminders` tìm chủ cửa hàng bằng 1 `findFirst` cho **mỗi** subscription; giờ 1 query cho cả lô.
 
+57. **Thêm mục `## Coding rules` vào `CLAUDE.md`** (ngay trước `## Architecture`, 25 rule chia 6 nhóm: bảo mật/đúng sai, một-bản-duy-nhất-của-mỗi-luật, phân tầng, kiểu, truy vấn, và checklist trước khi coi là xong). Mỗi rule được viết ra vì **đã có chỗ vi phạm và vi phạm đó im lặng** — phần lớn chính là 17 mục 40–56 ở trên; mỗi rule có ngoặc vuông trỏ về mục Architecture giải thích lý do. Mục đích là lần sau không phải review lại mới phát hiện.
+
 **Đã cân nhắc và cố ý KHÔNG làm** (nêu ra để lần sau khỏi tưởng là bỏ sót):
 - `CreateOrderDto` vẫn nhận `status`/`grandTotal`/`customerPay`/`change`/`discountValue` từ client. Khoá lại bây giờ là làm hỏng endpoint: module orders chưa port, **không có gì tính được các số đó** để thay thế. Phải làm cùng lúc với port thật module orders. Các DTO sinh tự động khác nhiều khả năng cùng vấn đề.
 - Đổi `tenantId?: string` thành kiểu tường minh (`TenantScope = {all: true} | {tenantId: string}`) để compiler bắt lỗi quên check — đúng nhưng đụng vào 22 module sinh tự động **và** template generator; churn lớn trên code sẽ được sinh lại. Để lại khi port thật từng module.

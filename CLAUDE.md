@@ -38,6 +38,115 @@ Unit test config lives inline in `package.json` (`rootDir: src`, matches `*.spec
 - `moduleNameMapper: {"^(\\.{1,2}/.*)\\.js$": "$1"}` — the generated Prisma client uses ESM-style `./foo.js` specifiers from `.ts` files.
 - `moduleNameMapper: {"^jose$": "<rootDir>/jose.stub.js"}` — `jose` is ESM-only and pulled in by `firebase-admin` → `jwks-rsa`; nothing in the tests exercises it. See the comment in `test/jose.stub.js`.
 
+## Coding rules
+
+These are the conventions this codebase is held to, each one written down because it was
+broken somewhere and the breakage was silent. The "why" for each lives in the Architecture
+section named in brackets. When a rule and an existing file disagree, the file is the thing
+to fix.
+
+### Security & correctness
+
+1. **Every new route declares its access.** `@Permissions(resource, action)` for anything a
+   STAFF account shouldn't reach, `AdminOnlyGuard` for platform-level resources,
+   `@Public()` only where auth genuinely must not apply. **No decorator means "any
+   authenticated user"** — that is a decision, so make it deliberately and never by
+   omission. Four subscription routes carried no decorator for weeks and let any staff
+   account start a paid upgrade. Pair it with `@ApiBearerAuth('bearer')` in the same edit.
+   [Authorization, Swagger]
+2. **Every `@Permissions` pair must exist in `prisma/seed.ts`'s `CATALOG`.** Nothing in the
+   type system catches a typo here — a pair with no catalog row silently becomes
+   ADMIN/TENANT_OWNER-only. Run `node scripts/check-permissions.js` after touching either
+   side. [Authorization]
+3. **Identity is read off `request.user`, never off a param, query or body** — `tenantId`,
+   the acting user's id, their role. Use `resolveTenantScope` / `requireTenantId`.
+   [Tenant scoping]
+4. **A create DTO never accepts a field the server should compute.** Totals, balances,
+   soft-delete states, actor ids. The generated CRUD DTOs still violate this (see
+   `CreateOrderDto`) — lock each one down as its module gets its real port.
+5. **Cross-tenant misses return 404, not 403**, and `update`/`delete` re-check scope with a
+   `findFirst` before writing by id. [Tenant scoping]
+
+### One copy of every rule
+
+6. **A business rule lives in exactly one function, and every caller goes through it.**
+   Never re-express it at a call site "just for this query" — that is how
+   `nextSubscriptionStatus` came to exist as two hand-written copies that had already
+   drifted. If a bulk path can't call the shared function directly, load the rows and
+   apply it per row rather than rewriting the conditions as a `where`. [Subscription]
+7. **Branch and warehouse changes go in `LocationService`**, not in one of the two
+   subclasses. Something belongs in a subclass only when it genuinely applies to one of
+   them. [Locations]
+8. **No status/role string literals.** `UserStatus`, `LocationStatus`, `SystemRole`,
+   `SubscriptionStatus`, `PaymentMethod` — and when a new enum-ish column shows up, add a
+   constants file rather than inlining the strings a dozen times.
+9. **Don't hand-edit a generated module; edit `scripts/generate-modules.js` instead**, or
+   add the model to `PORTED_MODELS` if it has stopped being generated code. A fix applied
+   only to the output is undone by the next generator run. [Module structure]
+
+### Layering
+
+10. **Services know nothing about HTTP.** No status codes in return values, no `@Res()`,
+    no `res.status()` in a controller. Throw the right `HttpException`; use `@HttpCode()`
+    when a route needs a fixed status. `handleSepayWebhook` was the one exception and it
+    read as a licence to copy the pattern elsewhere.
+11. **Never catch a Prisma error inside a service to turn it into a message.** Add the code
+    to `AllExceptionsFilter.translatePrismaError` so every module benefits.
+    [Bootstrap]
+12. **`AuditInterceptor` and `NotificationService` stay generic.** Route-specific text goes
+    in the domain's own `*.audit-template.ts` (marked `@AuditTemplate()`, self-registering)
+    or `templates/*.templates.ts`. Neither may grow an `if (path.includes(...))` chain.
+    [Notification & audit templates]
+13. **Prefer self-registration over a central list.** If adding a feature means "also
+    remember to add it to this array in `AppModule`", the list is the bug — a forgotten
+    entry still compiles and fails quietly. [Audit logging]
+
+### Types
+
+14. **Don't read an untyped object with `as` casts.** Declare the shape once, have the
+    producer commit to it (`satisfies`), and narrow at the boundary with one type guard.
+    A chain of `x.field as string` means a producer change breaks behaviour instead of the
+    build. [Audit logging]
+15. **Strip fields with destructure + rest**, not a `delete` loop or `Omit<...>` + cast —
+    `no-unused-vars` runs with `ignoreRestSiblings` precisely so this reads cleanly.
+16. **Share across Prisma models with a narrow structural interface, not `any`.** Prisma's
+    delegates satisfy a hand-written interface as-is (see `LocationDelegate`); prove it
+    with the compiler rather than reaching for a cast. [Locations]
+17. **Derive union types from the schema where you can** — `QuotaField` is
+    ``Extract<keyof Subscription, `quotaSnapshot${string}`>``, so a new column is usable
+    without editing a list. [Subscription]
+18. **`PartialType` comes from `@nestjs/swagger`, never `@nestjs/mapped-types`.** Both
+    validate identically; only the first one is visible to the Swagger plugin, so the
+    wrong import silently empties the docs for that endpoint. [Swagger]
+
+### Queries
+
+19. **No query inside a loop.** Collect the ids, do one `findMany`, index it in a `Map`.
+    Walking a parent chain one level at a time counts too — load the set once and walk it
+    in memory.
+20. **Anything a request needs repeatedly gets fetched once.** A tenant's category forest,
+    the owners of a batch of tenants: one round trip, then work in memory.
+
+### Small things that bite
+
+21. **Date arithmetic that produces a day count runs between midnights** (`wholeDaysBetween`,
+    `startOfDayUTC`). Dividing a raw millisecond gap makes the answer depend on the hour
+    the request arrived, and the test flaky. [Subscription]
+22. **A limit of `0` is a limit of zero.** Unlimited is `null` or negative. Don't collapse
+    falsy values into "no limit". [Subscription]
+23. **Comments explain the decision, not the code.** Every non-obvious choice in this
+    codebase carries a note saying what the old system did and why this differs — keep
+    that up when you change the decision, and delete the note when it stops being true.
+
+### Before you call it done
+
+24. `npx tsc --noEmit` · `pnpm run lint` · `pnpm run build` · `pnpm run test` ·
+    `node scripts/check-permissions.js` if decorators or the seed changed ·
+    `pnpm run test:e2e` (needs `docker compose up -d`).
+25. **Update `CLAUDE.md` in the same change** when a decision changes the architecture, and
+    **append a dated entry to `HANDOFF.md`** (Vietnamese, never rewrite past entries).
+    Say plainly what you could not verify.
+
 ## Architecture
 
 ### Data layer (Prisma / PostgreSQL)
