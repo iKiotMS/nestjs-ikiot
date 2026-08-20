@@ -12,6 +12,27 @@ export function addDays(date: Date, days: number): Date {
   return new Date(date.getTime() + days * DAY_MS);
 }
 
+/** Midnight UTC of the day `date` falls on. */
+export function startOfDayUTC(date: Date): Date {
+  return new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
+  );
+}
+
+/**
+ * Whole days from one date to another, counted between midnights so the answer never
+ * depends on what time of day the request happened to arrive. (Dividing the raw
+ * millisecond gap and rounding up — the previous approach — reported "10 days left" or
+ * "11 days left" for the same subscription depending on the hour, which made both the UI
+ * and any test of it unstable.) Negative when `later` is before `earlier`.
+ */
+export function wholeDaysBetween(earlier: Date, later: Date): number {
+  return Math.round(
+    (startOfDayUTC(later).getTime() - startOfDayUTC(earlier).getTime()) /
+      DAY_MS,
+  );
+}
+
 export function getBillingDays(
   billingCycle: string | null | undefined,
 ): number {

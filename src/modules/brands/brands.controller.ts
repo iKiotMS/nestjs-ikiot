@@ -4,25 +4,23 @@ import {
   Delete,
   Get,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { BrandService } from './brands.service';
-import { CreateBrandDto } from './dto/create-brands.dto';
-import { UpdateBrandDto } from './dto/update-brands.dto';
+import { CreateBrandDto } from './dto/create-brand.dto';
+import { UpdateBrandDto } from './dto/update-brand.dto';
+import { QueryBrandDto } from './dto/query-brand.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
-import {
-  requireTenantId,
-  resolveTenantScope,
-} from '../../common/utils/tenant-scope';
+import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Generated CRUD, not a real port yet: gated by the global JwtAuthGuard, scoped to the
-// caller's tenant and permission-checked against the 'brands' catalog resource — but
-// the service underneath is plain Prisma CRUD, not the real business logic.
+// Ported from iKiotMS-BE's brand module, where every route ran on bare verifyJwt with no
+// authorize() call — any logged-in user could edit any brand in the system.
 @ApiTags('brands')
 @ApiBearerAuth('bearer')
 @Controller('brands')
@@ -31,48 +29,49 @@ export class BrandController {
 
   @Permissions('brands', 'read')
   @Get()
-  findAll(@CurrentUser() user: AuthUser, @Query('tenantId') tenantId?: string) {
-    return this.service.findAll(resolveTenantScope(user, tenantId));
+  @ApiOperation({ summary: 'Danh sách thương hiệu' })
+  findAll(@CurrentUser() user: AuthUser, @Query() query: QueryBrandDto) {
+    return this.service.findAll(requireTenantId(user), query);
   }
 
   @Permissions('brands', 'read')
   @Get(':id')
+  @ApiOperation({ summary: 'Chi tiết thương hiệu' })
   findOne(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
+    @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.service.findOne(resolveTenantScope(user, tenantId), id);
+    return this.service.findOne(requireTenantId(user), id);
   }
 
   @Permissions('brands', 'create')
   @Post()
-  create(
-    @CurrentUser() user: AuthUser,
-    @Body() dto: CreateBrandDto,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.create(requireTenantId(user, tenantId), dto);
+  @ApiOperation({ summary: 'Tạo thương hiệu' })
+  create(@CurrentUser() user: AuthUser, @Body() dto: CreateBrandDto) {
+    return this.service.create(requireTenantId(user), dto);
   }
 
   @Permissions('brands', 'update')
   @Patch(':id')
+  @ApiOperation({ summary: 'Cập nhật thương hiệu' })
   update(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateBrandDto,
-    @Query('tenantId') tenantId?: string,
   ) {
-    return this.service.update(resolveTenantScope(user, tenantId), id, dto);
+    return this.service.update(requireTenantId(user), id, dto);
   }
 
   @Permissions('brands', 'delete')
   @Delete(':id')
+  @ApiOperation({
+    summary: 'Xoá thương hiệu',
+    description: 'Chỉ xoá được khi không còn sản phẩm nào sử dụng.',
+  })
   remove(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
+    @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.service.remove(resolveTenantScope(user, tenantId), id);
+    return this.service.remove(requireTenantId(user), id);
   }
 }

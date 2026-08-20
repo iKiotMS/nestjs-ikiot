@@ -1,5 +1,6 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { UserStatus } from '../../common/constants/user-status';
 import { SystemRole } from '../../common/constants/system-role';
 import { RealtimeGateway } from '../../common/realtime/realtime.gateway';
 import type { AuthUser } from '../../common/types/auth-user.type';
@@ -85,7 +86,7 @@ export class NotificationService {
         where: {
           tenantId,
           systemRole: SystemRole.TENANT_OWNER,
-          status: 'ACTIVE',
+          status: UserStatus.ACTIVE,
         },
         select: { id: true },
       });

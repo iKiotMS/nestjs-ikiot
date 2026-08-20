@@ -4,12 +4,16 @@ import {
   Injectable,
   Logger,
   NestInterceptor,
+  OnModuleInit,
 } from '@nestjs/common';
+import { DiscoveryService } from '@nestjs/core';
 import type { Request } from 'express';
 import { Observable, tap } from 'rxjs';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SystemRole } from '../constants/system-role';
 import type { AuthUser } from '../types/auth-user.type';
+import type { AuditableLoginResponse } from '../types/login-response.type';
+import { AuditTemplate } from '../audit/audit-descriptor';
 import type { AuditDescriptor } from '../audit/audit-descriptor';
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -38,21 +42,35 @@ type AuthedRequest = Request & { user?: AuthUser };
 //      audit trail (see GET /audit-logs in the audit-logs module).
 //   2. Route-specific resource/details descriptions (e.g. the old subscription-upgrade
 //      special case) live in per-domain `*.audit-template.ts` files implementing
-//      AuditDescriptor, injected in here via `descriptors` — this file must never grow
-//      route-specific knowledge of any feature module again. See CLAUDE.md "Audit logging".
+//      AuditDescriptor and marked `@AuditTemplate()`, which this interceptor discovers at
+//      startup — this file must never grow route-specific knowledge of any feature module
+//      again. See CLAUDE.md "Audit logging".
 //
 // Also unlike the old version, this doesn't hook res.on('finish') to check a real 2xx
 // status code — in Nest, a thrown HttpException makes the handler's observable error out
 // instead of emitting a value, so "did `next.handle()` emit" is already an exact proxy
 // for "did the request succeed" given every failure path here throws.
 @Injectable()
-export class AuditInterceptor implements NestInterceptor {
+export class AuditInterceptor implements NestInterceptor, OnModuleInit {
   private readonly logger = new Logger(AuditInterceptor.name);
+  private descriptors: AuditDescriptor[] = [];
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly descriptors: AuditDescriptor[] = [],
+    private readonly discovery: DiscoveryService,
   ) {}
+
+  /**
+   * Collected once at startup rather than injected: every `@AuditTemplate()` provider in
+   * the app registers itself just by existing, so adding one never means editing a list
+   * over in AppModule.
+   */
+  onModuleInit(): void {
+    this.descriptors = this.discovery
+      .getProviders({ metadataKey: AuditTemplate.KEY })
+      .map((wrapper) => wrapper.instance as AuditDescriptor)
+      .filter((instance): instance is AuditDescriptor => Boolean(instance));
+  }
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     if (context.getType() !== 'http') return next.handle();
@@ -110,14 +128,14 @@ export class AuditInterceptor implements NestInterceptor {
     });
   }
 
+  /**
+   * `request.ip` already is the right answer: Express derives it from X-Forwarded-For
+   * only when `trust proxy` is configured (see main.ts), and from the socket otherwise.
+   * Reading the header directly — which this used to do — meant any client could pick the
+   * IP recorded against their own actions just by sending it.
+   */
   private resolveIp(request: Request): string {
-    const forwarded =
-      (request.headers['x-forwarded-for'] as string | undefined) ?? '';
-    const raw =
-      forwarded.split(',')[0].trim() ||
-      request.socket?.remoteAddress ||
-      request.ip ||
-      '';
+    const raw = request.ip ?? request.socket?.remoteAddress ?? '';
     if (!raw) return '127.0.0.1';
     if (raw === '::1') return '127.0.0.1';
     if (raw.startsWith('::ffff:')) return raw.slice(7);
@@ -145,29 +163,34 @@ export class AuditInterceptor implements NestInterceptor {
     // /auth/login and /auth/firebase-login are @Public() — JwtStrategy never ran, so
     // request.user isn't set. Resolve the actor from the response body instead (cheaper
     // than iKiotMS-BE's re-query-by-phone/email, since AuthService already returns it).
-    if (
-      path.includes('/login') &&
-      body &&
-      typeof body === 'object' &&
-      'user' in body
-    ) {
-      const u = (body as { user?: Record<string, unknown> }).user;
-      if (!u?.id) return null;
-      const firstName = u.profileFirstName as string | null;
-      const lastName = u.profileLastName as string | null;
-      const name = firstName
-        ? `${firstName} ${lastName ?? ''}`.trim()
-        : ((u.email as string) ?? (u.phoneNumber as string) ?? 'Unknown');
-      return {
-        userId: u.id as string,
-        tenantId: (u.tenantId as string | null) ?? null,
-        systemRole: u.systemRole as string,
-        email: (u.email as string | null) ?? null,
-        name,
-      };
-    }
+    if (!path.includes('/login') || !this.isLoginResponse(body)) return null;
 
-    return null;
+    const { user } = body;
+    return {
+      userId: user.id,
+      tenantId: user.tenantId,
+      systemRole: user.systemRole,
+      email: user.email,
+      name: user.profileFirstName
+        ? `${user.profileFirstName} ${user.profileLastName ?? ''}`.trim()
+        : (user.email ?? user.phoneNumber ?? 'Unknown'),
+    };
+  }
+
+  /**
+   * The one runtime check standing between an untyped response body and AuditableLoginResponse.
+   * AuthService declares that same type with `satisfies`, so the two can't drift apart
+   * without the build failing — this only has to prove we're looking at a login response
+   * at all, not re-validate each field.
+   */
+  private isLoginResponse(body: unknown): body is AuditableLoginResponse {
+    if (!body || typeof body !== 'object' || !('user' in body)) return false;
+    const user = body.user;
+    return (
+      typeof user === 'object' &&
+      user !== null &&
+      typeof (user as { id?: unknown }).id === 'string'
+    );
   }
 
   private async describe(

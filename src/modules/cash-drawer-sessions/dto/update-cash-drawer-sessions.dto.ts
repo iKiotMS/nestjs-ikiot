@@ -1,4 +1,4 @@
-import { PartialType } from '@nestjs/mapped-types';
+import { PartialType } from '@nestjs/swagger';
 import { CreateCashDrawerSessionDto } from './create-cash-drawer-sessions.dto';
 
 export class UpdateCashDrawerSessionDto extends PartialType(

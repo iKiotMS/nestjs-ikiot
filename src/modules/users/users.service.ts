@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../../prisma/prisma.service';
+import { UserStatus } from '../../common/constants/user-status';
 import { SystemRole } from '../../common/constants/system-role';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -35,7 +36,7 @@ export class UserService {
 
   findAll(tenantId: string) {
     return this.prisma.user.findMany({
-      where: { tenantId, status: { not: 'DELETED' } },
+      where: { tenantId, status: { not: UserStatus.DELETED } },
       select: SELECT_SAFE,
       orderBy: { createdAt: 'desc' },
     });
@@ -77,7 +78,7 @@ export class UserService {
         warehouseId: dto.warehouseId,
         profileFirstName: dto.firstName,
         profileLastName: dto.lastName,
-        status: 'ACTIVE',
+        status: UserStatus.ACTIVE,
       },
       select: SELECT_SAFE,
     });
@@ -119,7 +120,7 @@ export class UserService {
     }
     await this.prisma.user.update({
       where: { id },
-      data: { status: 'DELETED', deletedAt: new Date() },
+      data: { status: UserStatus.DELETED, deletedAt: new Date() },
     });
     return { success: true };
   }

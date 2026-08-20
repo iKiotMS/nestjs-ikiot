@@ -4,25 +4,23 @@ import {
   Delete,
   Get,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { WarehouseService } from './warehouses.service';
-import { CreateWarehouseDto } from './dto/create-warehouses.dto';
-import { UpdateWarehouseDto } from './dto/update-warehouses.dto';
+import { CreateWarehouseDto } from './dto/create-warehouse.dto';
+import { UpdateWarehouseDto } from './dto/update-warehouse.dto';
+import { QueryWarehouseDto } from './dto/query-warehouse.dto';
+import { AssignWarehouseManagerDto } from './dto/assign-warehouse-manager.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
-import {
-  requireTenantId,
-  resolveTenantScope,
-} from '../../common/utils/tenant-scope';
+import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Generated CRUD, not a real port yet: gated by the global JwtAuthGuard, scoped to the
-// caller's tenant and permission-checked against the 'warehouses' catalog resource — but
-// the service underneath is plain Prisma CRUD, not the real business logic.
+// Ported from iKiotMS-BE's warehouse module — same route surface as branches.
 @ApiTags('warehouses')
 @ApiBearerAuth('bearer')
 @Controller('warehouses')
@@ -31,48 +29,68 @@ export class WarehouseController {
 
   @Permissions('warehouses', 'read')
   @Get()
-  findAll(@CurrentUser() user: AuthUser, @Query('tenantId') tenantId?: string) {
-    return this.service.findAll(resolveTenantScope(user, tenantId));
+  @ApiOperation({ summary: 'Danh sách kho (phân trang, tìm kiếm)' })
+  findAll(@CurrentUser() user: AuthUser, @Query() query: QueryWarehouseDto) {
+    return this.service.findAll(requireTenantId(user), query);
   }
 
   @Permissions('warehouses', 'read')
   @Get(':id')
+  @ApiOperation({ summary: 'Chi tiết kho' })
   findOne(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
+    @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.service.findOne(resolveTenantScope(user, tenantId), id);
+    return this.service.findOne(requireTenantId(user), id);
   }
 
   @Permissions('warehouses', 'create')
   @Post()
-  create(
-    @CurrentUser() user: AuthUser,
-    @Body() dto: CreateWarehouseDto,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.create(requireTenantId(user, tenantId), dto);
+  @ApiOperation({
+    summary: 'Tạo kho',
+    description:
+      'Yêu cầu gói dịch vụ còn hiệu lực và chưa vượt hạn mức số kho của gói.',
+  })
+  create(@CurrentUser() user: AuthUser, @Body() dto: CreateWarehouseDto) {
+    return this.service.create(requireTenantId(user), dto);
   }
 
   @Permissions('warehouses', 'update')
   @Patch(':id')
+  @ApiOperation({ summary: 'Cập nhật kho' })
   update(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateWarehouseDto,
-    @Query('tenantId') tenantId?: string,
   ) {
-    return this.service.update(resolveTenantScope(user, tenantId), id, dto);
+    return this.service.update(requireTenantId(user), id, dto);
+  }
+
+  @Permissions('warehouses', 'assign_manager')
+  @Patch(':id/manager')
+  @ApiOperation({
+    summary: 'Bổ nhiệm quản lý kho',
+    description:
+      'Ghi vào Warehouse.managerId. Không thay đổi Role của nhân viên — tenant tự quyết quản lý được làm gì.',
+  })
+  assignManager(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: AssignWarehouseManagerDto,
+  ) {
+    return this.service.assignManager(requireTenantId(user), id, dto.staffId);
   }
 
   @Permissions('warehouses', 'delete')
   @Delete(':id')
+  @ApiOperation({
+    summary: 'Xoá kho (soft delete)',
+    description: 'Đặt status = DELETED. Không xoá bản ghi khỏi database.',
+  })
   remove(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
+    @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.service.remove(resolveTenantScope(user, tenantId), id);
+    return this.service.remove(requireTenantId(user), id);
   }
 }

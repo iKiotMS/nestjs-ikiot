@@ -4,12 +4,11 @@ import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PrismaService } from '../../../prisma/prisma.service';
 import type { AuthUser } from '../../../common/types/auth-user.type';
 import { SystemRole } from '../../../common/constants/system-role';
+import { INACTIVE_USER_STATUSES } from '../../../common/constants/user-status';
 
 interface JwtPayload {
   sub: string;
 }
-
-const INACTIVE_STATUSES = new Set(['SUSPENDED', 'INACTIVE', 'DELETED']);
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -32,7 +31,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
 
     if (!user) throw new UnauthorizedException('User not found');
-    if (INACTIVE_STATUSES.has(user.status))
+    if (INACTIVE_USER_STATUSES.has(user.status))
       throw new UnauthorizedException('Account is not active');
 
     return {

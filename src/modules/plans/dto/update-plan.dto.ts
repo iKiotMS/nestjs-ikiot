@@ -42,6 +42,11 @@ export class UpdatePlanDto {
   @IsOptional()
   @IsInt()
   @Min(-1)
+  maxWarehouses?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(-1)
   maxUsers?: number;
 
   @IsOptional()

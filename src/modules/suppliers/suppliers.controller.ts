@@ -3,26 +3,27 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { SupplierService } from './suppliers.service';
-import { CreateSupplierDto } from './dto/create-suppliers.dto';
-import { UpdateSupplierDto } from './dto/update-suppliers.dto';
+import { CreateSupplierDto } from './dto/create-supplier.dto';
+import { UpdateSupplierDto } from './dto/update-supplier.dto';
+import { QuerySupplierDto } from './dto/query-supplier.dto';
+import { PaySupplierDebtDto } from './dto/pay-supplier-debt.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
-import {
-  requireTenantId,
-  resolveTenantScope,
-} from '../../common/utils/tenant-scope';
+import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Generated CRUD, not a real port yet: gated by the global JwtAuthGuard, scoped to the
-// caller's tenant and permission-checked against the 'suppliers' catalog resource — but
-// the service underneath is plain Prisma CRUD, not the real business logic.
+// Ported from iKiotMS-BE's supplier module — the only one of the product-attribute modules
+// that carries real business logic (payables).
 @ApiTags('suppliers')
 @ApiBearerAuth('bearer')
 @Controller('suppliers')
@@ -31,48 +32,75 @@ export class SupplierController {
 
   @Permissions('suppliers', 'read')
   @Get()
-  findAll(@CurrentUser() user: AuthUser, @Query('tenantId') tenantId?: string) {
-    return this.service.findAll(resolveTenantScope(user, tenantId));
+  @ApiOperation({
+    summary: 'Danh sách nhà cung cấp',
+    description:
+      'Tìm theo tên/số điện thoại, lọc `hasDebt=true` để xem bên còn nợ.',
+  })
+  findAll(@CurrentUser() user: AuthUser, @Query() query: QuerySupplierDto) {
+    return this.service.findAll(requireTenantId(user), query);
   }
 
   @Permissions('suppliers', 'read')
   @Get(':id')
+  @ApiOperation({ summary: 'Chi tiết nhà cung cấp' })
   findOne(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
+    @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.service.findOne(resolveTenantScope(user, tenantId), id);
+    return this.service.findOne(requireTenantId(user), id);
   }
 
   @Permissions('suppliers', 'create')
   @Post()
-  create(
-    @CurrentUser() user: AuthUser,
-    @Body() dto: CreateSupplierDto,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.create(requireTenantId(user, tenantId), dto);
+  @ApiOperation({
+    summary: 'Tạo nhà cung cấp',
+    description: 'Công nợ luôn bắt đầu từ 0, không nhận từ client.',
+  })
+  create(@CurrentUser() user: AuthUser, @Body() dto: CreateSupplierDto) {
+    return this.service.create(requireTenantId(user), dto);
   }
 
   @Permissions('suppliers', 'update')
   @Patch(':id')
+  @ApiOperation({ summary: 'Cập nhật nhà cung cấp' })
   update(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateSupplierDto,
-    @Query('tenantId') tenantId?: string,
   ) {
-    return this.service.update(resolveTenantScope(user, tenantId), id, dto);
+    return this.service.update(requireTenantId(user), id, dto);
+  }
+
+  @Permissions('suppliers', 'pay_debt')
+  @Post(':id/payments')
+  // 200, not Nest's default 201 for POST: iKiotMS-BE answered 200 here and the frontend
+  // checks the status code.
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Thanh toán công nợ nhà cung cấp',
+    description:
+      'Giảm công nợ và ghi một phiếu chi (CashFlow EXPENSE) trong cùng một transaction, sau đó thông báo cho chủ cửa hàng.',
+  })
+  payDebt(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: PaySupplierDebtDto,
+  ) {
+    return this.service.payDebt(requireTenantId(user), user.userId, id, dto);
   }
 
   @Permissions('suppliers', 'delete')
   @Delete(':id')
+  @ApiOperation({
+    summary: 'Xoá nhà cung cấp',
+    description:
+      'Chỉ xoá được khi không còn công nợ và chưa phát sinh giao dịch.',
+  })
   remove(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
+    @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.service.remove(resolveTenantScope(user, tenantId), id);
+    return this.service.remove(requireTenantId(user), id);
   }
 }

@@ -27,6 +27,14 @@ export default tseslint.config(
   {
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
+      // "Destructure the fields I want to drop, spread the rest" is how this codebase
+      // strips columns from a row (see withNestedAttendanceLocation, AuthService's
+      // toPublicUser). Without ignoreRestSiblings each dropped field reads as an unused
+      // variable, which is what pushed those helpers into delete-loops and casts instead.
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { ignoreRestSiblings: true, argsIgnorePattern: '^_' },
+      ],
       '@typescript-eslint/no-floating-promises': 'warn',
       '@typescript-eslint/no-unsafe-argument': 'warn',
       "prettier/prettier": ["error", { endOfLine: "auto" }],

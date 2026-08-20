@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { AuditTemplate } from '../../common/audit/audit-descriptor';
 import type {
   AuditDescribeContext,
   AuditDescribed,
@@ -10,6 +11,7 @@ import type {
 // platform-admin direct plan change) — moved out of AuditInterceptor so that file stays
 // domain-agnostic. See CLAUDE.md "Audit logging" for the rule.
 @Injectable()
+@AuditTemplate()
 export class SubscriptionAuditTemplate implements AuditDescriptor {
   constructor(private readonly prisma: PrismaService) {}
 

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { SubscriptionController } from './subscriptions.controller';
 import { SubscriptionService } from './subscriptions.service';
+import { SubscriptionBillingService } from './subscription-billing.service';
 import { SepaySubscriptionService } from './sepay-subscription.service';
 import { SubscriptionCronService } from './subscription-cron.service';
 import { SubscriptionAuditTemplate } from './subscription.audit-template';
@@ -12,13 +13,15 @@ import { EmailModule } from '../../common/email/email.module';
   controllers: [SubscriptionController],
   providers: [
     SubscriptionService,
+    SubscriptionBillingService,
     SepaySubscriptionService,
     SubscriptionCronService,
     SubscriptionAuditTemplate,
   ],
-  // SubscriptionAuditTemplate is exported so AppModule's AuditInterceptor factory can
-  // inject it — see CLAUDE.md "Audit logging" for why AuditInterceptor itself never
-  // imports feature modules directly.
-  exports: [SubscriptionService, SubscriptionAuditTemplate],
+  // Only SubscriptionService is exported: other modules gate features on the subscription
+  // (requireActiveSubscription/assertQuota); nobody outside raises an invoice.
+  // SubscriptionAuditTemplate needs no export either — AuditInterceptor discovers it
+  // through its @AuditTemplate() decorator. See CLAUDE.md "Audit logging".
+  exports: [SubscriptionService],
 })
 export class SubscriptionModule {}

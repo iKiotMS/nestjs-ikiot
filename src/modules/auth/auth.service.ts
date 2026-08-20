@@ -10,7 +10,12 @@ import * as bcrypt from 'bcryptjs';
 import type { DecodedIdToken } from 'firebase-admin/auth';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SystemRole } from '../../common/constants/system-role';
+import {
+  INACTIVE_USER_STATUSES,
+  UserStatus,
+} from '../../common/constants/user-status';
 import type { AuthUser } from '../../common/types/auth-user.type';
+import type { AuditableLoginResponse } from '../../common/types/login-response.type';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
@@ -20,7 +25,6 @@ import { FirebaseLoginDto } from './dto/firebase-login.dto';
 import { OtpService } from './otp.service';
 import { FirebaseService } from './firebase.service';
 
-const INACTIVE_STATUSES = new Set(['SUSPENDED', 'INACTIVE', 'DELETED']);
 const BCRYPT_COST = 10;
 
 // Same wording as iKiotMS-BE's AuthService (ROLE_DENIED_MOBILE/ROLE_DENIED_WEB) —
@@ -66,7 +70,7 @@ export class AuthService {
           email: dto.email,
           password: passwordHash,
           systemRole: SystemRole.TENANT_OWNER,
-          status: 'ACTIVE',
+          status: UserStatus.ACTIVE,
           profileFirstName: dto.firstName,
           profileLastName: dto.lastName,
         },
@@ -91,7 +95,7 @@ export class AuthService {
     });
     if (!user || !user.password)
       throw new UnauthorizedException('Invalid phone number or password');
-    if (INACTIVE_STATUSES.has(user.status))
+    if (INACTIVE_USER_STATUSES.has(user.status))
       throw new UnauthorizedException('Invalid phone number or password');
 
     const matches = await bcrypt.compare(dto.password, user.password);
@@ -106,7 +110,7 @@ export class AuthService {
     return {
       accessToken: this.issueAccessToken(user.id),
       user: this.toPublicUser(user),
-    };
+    } satisfies AuditableLoginResponse;
   }
 
   async me(userId: string) {
@@ -205,7 +209,7 @@ export class AuthService {
       throw new UnauthorizedException(
         'Email này chưa được đăng ký trong hệ thống',
       );
-    if (INACTIVE_STATUSES.has(user.status)) {
+    if (INACTIVE_USER_STATUSES.has(user.status)) {
       throw new UnauthorizedException('Tài khoản không hoạt động');
     }
 
@@ -223,16 +227,22 @@ export class AuthService {
     return {
       accessToken: this.issueAccessToken(user.id),
       user: this.toPublicUser(user),
-    };
+    } satisfies AuditableLoginResponse;
   }
 
   private issueAccessToken(userId: string): string {
     return this.jwt.sign({ sub: userId });
   }
 
-  private toPublicUser(user: Record<string, unknown>) {
-    const rest = { ...user };
-    delete rest.password;
+  /**
+   * Strips the password hash and keeps every other field, with its type intact — the old
+   * `Record<string, unknown>` signature erased the user's shape, which is why callers
+   * (and AuditInterceptor) had to cast fields back one by one.
+   */
+  private toPublicUser<T extends { password?: string | null }>(
+    user: T,
+  ): Omit<T, 'password'> {
+    const { password, ...rest } = user;
     return rest;
   }
 }

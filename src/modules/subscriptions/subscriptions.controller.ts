@@ -3,16 +3,18 @@ import {
   Controller,
   Get,
   Headers,
+  HttpCode,
+  HttpStatus,
   Param,
   Post,
-  Res,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import type { Response } from 'express';
 import { SubscriptionService } from './subscriptions.service';
+import { SubscriptionBillingService } from './subscription-billing.service';
 import { UpgradeSubscriptionDto } from './dto/upgrade-subscription.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import { Public } from '../../common/decorators/public.decorator';
 import { AdminOnlyGuard } from '../../common/guards/admin-only.guard';
@@ -20,12 +22,21 @@ import type { AuthUser } from '../../common/types/auth-user.type';
 
 // No class-level @Controller() prefix — routes mix /subscription/* with a standalone
 // /webhook/sepay path, same layout as iKiotMS-BE's single subscription router.
+//
+// Every tenant route below is gated: buying, upgrading and renewing spend the tenant's
+// money, so they need `subscriptions:manage`, and a TENANT_OWNER passes it automatically
+// (PermissionsGuard short-circuits them). These carried no @Permissions at all until
+// 2026-08-20, which left any staff account able to start a paid upgrade.
 @ApiTags('subscriptions')
 @Controller()
 export class SubscriptionController {
-  constructor(private readonly subscriptionService: SubscriptionService) {}
+  constructor(
+    private readonly subscriptionService: SubscriptionService,
+    private readonly billingService: SubscriptionBillingService,
+  ) {}
 
   @ApiBearerAuth('bearer')
+  @Permissions('subscriptions', 'manage')
   @Post('subscription/free-trial')
   async assignFreeTrial(@CurrentUser() user: AuthUser) {
     const data = await this.subscriptionService.assignFreeTrial(
@@ -36,18 +47,20 @@ export class SubscriptionController {
   }
 
   @ApiBearerAuth('bearer')
+  @Permissions('subscriptions', 'read')
   @Get('subscription/status')
   status(@CurrentUser() user: AuthUser) {
     return this.subscriptionService.checkTrialStatus(requireTenantId(user));
   }
 
   @ApiBearerAuth('bearer')
+  @Permissions('subscriptions', 'manage')
   @Post('subscription/upgrade/initiate')
   async initiateUpgrade(
     @CurrentUser() user: AuthUser,
     @Body() dto: UpgradeSubscriptionDto,
   ) {
-    const data = await this.subscriptionService.initiateUpgrade(
+    const data = await this.billingService.initiateUpgrade(
       requireTenantId(user),
       dto.planCode,
     );
@@ -59,9 +72,10 @@ export class SubscriptionController {
   }
 
   @ApiBearerAuth('bearer')
+  @Permissions('subscriptions', 'manage')
   @Post('subscription/renew/initiate')
   async initiateRenewal(@CurrentUser() user: AuthUser) {
-    const data = await this.subscriptionService.initiateRenewal(
+    const data = await this.billingService.initiateRenewal(
       requireTenantId(user),
     );
     return {
@@ -87,23 +101,17 @@ export class SubscriptionController {
     return { message: `Successfully upgraded to ${dto.planCode}`, data };
   }
 
-  // Called by SePay when money arrives in iKiot's own bank account. Always resolves with
-  // HTTP 200 (except a bad API key) — SePay must not be given a reason to retry
-  // indefinitely on our bugs. Status/body are set manually since they vary per case in a
-  // way @HttpCode() (static) can't express.
+  // Called by SePay when money arrives in iKiot's own bank account. Answers 200 for every
+  // outcome — SePay must not be given a reason to retry indefinitely on our bugs — except
+  // a bad API key, where the service throws a 401.
   @Public()
+  @HttpCode(HttpStatus.OK)
   @Post('webhook/sepay')
-  async webhook(
+  webhook(
     @Headers('authorization') authHeader: string | undefined,
     @Body() payload: Record<string, unknown>,
-    @Res({ passthrough: true }) res: Response,
   ) {
     const apiKey = authHeader?.split(' ')[1] ?? '';
-    const result = await this.subscriptionService.handleSepayWebhook(
-      apiKey,
-      payload,
-    );
-    res.status(result.httpStatus);
-    return result.body;
+    return this.billingService.handleSepayWebhook(apiKey, payload);
   }
 }

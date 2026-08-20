@@ -5,20 +5,26 @@ import { NotificationService } from '../notifications/notifications.service';
 import { SubscriptionNotificationTemplates } from '../notifications/templates/subscription.templates';
 import type { NotificationContent } from '../notifications/notification-content.type';
 import { EmailService } from '../../common/email/email.service';
+import { SystemRole } from '../../common/constants/system-role';
+import { UserStatus } from '../../common/constants/user-status';
 import {
   addDays,
-  GRACE_PERIOD_DAYS,
   REMINDER_DAYS,
+  startOfDayUTC,
 } from './subscription.constants';
+import {
+  nextSubscriptionStatus,
+  SubscriptionStatus,
+} from './subscription-status';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-function startOfTodayUTC(): Date {
-  const d = new Date();
-  return new Date(
-    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()),
-  );
-}
+/** The statuses the clock can still move; EXPIRED and CANCELLED never change on their own. */
+const TRANSITIONABLE = [
+  SubscriptionStatus.TRIAL,
+  SubscriptionStatus.ACTIVE,
+  SubscriptionStatus.PAST_DUE,
+];
 
 // Ported from iKiotMS-BE's src/jobs/subscriptionJob.js (node-cron, "0 2 * * *") using
 // @nestjs/schedule instead — same daily 02:00 schedule, same two-step run (status
@@ -49,54 +55,84 @@ export class SubscriptionCronService {
     }
   }
 
+  /**
+   * Nightly sweep of everything whose term has run out.
+   *
+   * The decision itself comes from `nextSubscriptionStatus`, the same function
+   * SubscriptionService applies lazily on read — this job only finds the candidates and
+   * writes the answer down. It used to re-express those rules as three hand-written
+   * `updateMany` filters, which had already drifted from the lazy copy.
+   */
   async runSubscriptionStatusCheck() {
     const now = new Date();
-    const graceCutoff = addDays(now, -GRACE_PERIOD_DAYS);
 
-    // Capture who's about to transition BEFORE the bulk update — afterwards there's no
-    // way to tell which rows just changed.
-    const [trialsToExpire, toExpire] = await Promise.all([
-      this.prisma.subscription.findMany({
-        where: { status: 'TRIAL', trialEndDate: { lt: now } },
-        select: { id: true, tenantId: true },
-      }),
-      this.prisma.subscription.findMany({
-        where: { status: 'PAST_DUE', endDate: { lt: graceCutoff } },
-        select: { id: true, tenantId: true },
-      }),
-    ]);
+    // Anything already settled is skipped by the date filter, so this stays a small set
+    // even on a big instance.
+    const candidates = await this.prisma.subscription.findMany({
+      where: {
+        status: { in: TRANSITIONABLE },
+        OR: [{ endDate: { lt: now } }, { trialEndDate: { lt: now } }],
+      },
+      select: {
+        id: true,
+        tenantId: true,
+        status: true,
+        endDate: true,
+        trialEndDate: true,
+      },
+    });
 
-    const [expiredTrials, markedPastDue, markedExpired] = await Promise.all([
-      this.prisma.subscription.updateMany({
-        where: { status: 'TRIAL', trialEndDate: { lt: now } },
-        data: { status: 'EXPIRED' },
-      }),
-      this.prisma.subscription.updateMany({
-        where: { status: 'ACTIVE', endDate: { lt: now } },
-        data: { status: 'PAST_DUE' },
-      }),
-      this.prisma.subscription.updateMany({
-        where: { status: 'PAST_DUE', endDate: { lt: graceCutoff } },
-        data: { status: 'EXPIRED' },
-      }),
-    ]);
+    const transitions = candidates
+      .map((subscription) => ({
+        subscription,
+        nextStatus: nextSubscriptionStatus(subscription, now),
+      }))
+      .filter(
+        ({ subscription, nextStatus }) => nextStatus !== subscription.status,
+      );
 
-    this.logger.log(
-      `Trial expired: ${expiredTrials.count} | Past due: ${markedPastDue.count} | Expired: ${markedExpired.count}`,
+    const byNextStatus = new Map<string, string[]>();
+    for (const { subscription, nextStatus } of transitions) {
+      const ids = byNextStatus.get(nextStatus) ?? [];
+      ids.push(subscription.id);
+      byNextStatus.set(nextStatus, ids);
+    }
+
+    for (const [status, ids] of byNextStatus) {
+      await this.prisma.subscription.updateMany({
+        where: { id: { in: ids } },
+        data: { status },
+      });
+      this.logger.log(`Moved ${ids.length} subscription(s) to ${status}`);
+    }
+
+    // A trial running out and a paid term running out read very differently to the owner,
+    // so they get different copy even though both land on EXPIRED.
+    const expired = transitions.filter(
+      ({ nextStatus }) => nextStatus === SubscriptionStatus.EXPIRED,
     );
-
     await this.notifyStatusChange(
-      trialsToExpire,
+      expired
+        .filter(
+          ({ subscription }) =>
+            subscription.status === SubscriptionStatus.TRIAL,
+        )
+        .map(({ subscription }) => subscription),
       SubscriptionNotificationTemplates.trialExpired(),
     );
     await this.notifyStatusChange(
-      toExpire,
+      expired
+        .filter(
+          ({ subscription }) =>
+            subscription.status !== SubscriptionStatus.TRIAL,
+        )
+        .map(({ subscription }) => subscription),
       SubscriptionNotificationTemplates.expired(),
     );
   }
 
   async sendExpiryReminders() {
-    const today = startOfTodayUTC();
+    const today = startOfDayUTC(new Date());
 
     for (const days of REMINDER_DAYS) {
       const windowStart = addDays(today, days);
@@ -104,7 +140,9 @@ export class SubscriptionCronService {
 
       const subscriptions = await this.prisma.subscription.findMany({
         where: {
-          status: { in: ['TRIAL', 'ACTIVE'] },
+          status: {
+            in: [SubscriptionStatus.TRIAL, SubscriptionStatus.ACTIVE],
+          },
           endDate: { gte: windowStart, lt: windowEnd },
         },
         include: {
@@ -112,18 +150,14 @@ export class SubscriptionCronService {
           tenant: { select: { name: true } },
         },
       });
+      if (subscriptions.length === 0) continue;
+
+      const ownerByTenant = await this.ownersOf(
+        subscriptions.map((subscription) => subscription.tenantId),
+      );
 
       for (const sub of subscriptions) {
-        // Tenant.tenantOwnerId is an unenforced scalar (no Prisma relation, avoids a
-        // circular FK at Tenant/User creation time) — look the owner up directly instead.
-        const owner = await this.prisma.user.findFirst({
-          where: {
-            tenantId: sub.tenantId,
-            systemRole: 'TENANT_OWNER',
-            status: 'ACTIVE',
-          },
-          select: { id: true, email: true },
-        });
+        const owner = ownerByTenant.get(sub.tenantId);
 
         await this.notifications.notify({
           tenantId: sub.tenantId,
@@ -144,6 +178,30 @@ export class SubscriptionCronService {
         });
       }
     }
+  }
+
+  /**
+   * Owner account per tenant, in one query for the whole batch rather than one query per
+   * subscription. `Tenant.tenantOwnerId` is an unenforced scalar (no Prisma relation — it
+   * would be a circular FK at Tenant/User creation time), so the owner is found by role.
+   */
+  private async ownersOf(tenantIds: string[]) {
+    const owners = await this.prisma.user.findMany({
+      where: {
+        tenantId: { in: tenantIds },
+        systemRole: SystemRole.TENANT_OWNER,
+        status: UserStatus.ACTIVE,
+      },
+      select: { id: true, email: true, tenantId: true },
+    });
+
+    const byTenant = new Map<string, { id: string; email: string | null }>();
+    for (const owner of owners) {
+      if (owner.tenantId && !byTenant.has(owner.tenantId)) {
+        byTenant.set(owner.tenantId, { id: owner.id, email: owner.email });
+      }
+    }
+    return byTenant;
   }
 
   private async notifyStatusChange(

@@ -1,44 +1,53 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CreateWarehouseDto } from './dto/create-warehouses.dto';
-import { UpdateWarehouseDto } from './dto/update-warehouses.dto';
+import { SubscriptionService } from '../subscriptions/subscriptions.service';
+import { LocationService } from '../locations/location.service';
+import { MANAGER_SELECT } from '../locations/location.types';
+import type { LocationConfig } from '../locations/location.types';
+import type { Prisma } from '../../../generated/prisma/client';
 
+type WarehouseRow = Prisma.WarehouseGetPayload<{
+  include: { manager: { select: typeof MANAGER_SELECT } };
+}>;
+
+/** Everything that makes a warehouse a warehouse rather than a branch. */
+const WAREHOUSE_CONFIG: LocationConfig = {
+  quotaField: 'quotaSnapshotMaxWarehouses',
+  postingField: 'warehouseId',
+  otherPostingField: 'branchId',
+  messages: {
+    notFound: 'Không tìm thấy kho',
+    alreadyDeleted: 'Kho đã bị xoá',
+    quotaLabel: 'số kho',
+    staffStillAttached: (count) =>
+      `Không thể xoá kho khi còn ${count} nhân viên đang trực thuộc. Hãy chuyển họ sang nơi làm việc khác trước.`,
+    staffNotEligible:
+      'Người được bổ nhiệm phải là nhân viên đang hoạt động của cửa hàng',
+    staffPostedElsewhere:
+      'Nhân viên này đang trực thuộc một nơi làm việc khác. Hãy chuyển họ về kho này trước khi bổ nhiệm.',
+  },
+};
+
+/**
+ * Ported from iKiotMS-BE's WarehouseService + WarehouseController, then brought in line
+ * with BranchService: a tenant runs several warehouses now, so a warehouse gets the same
+ * treatment a branch does — contact details, a plan quota, and an appointment rule that
+ * refuses to take a staff member away from a location they already belong to.
+ *
+ * That last rule is why the shared LocationService exists. The old WarehouseService
+ * accepted any active staff member in the tenant, unlike its branch counterpart; that was
+ * safe only while a tenant had a single warehouse. With one implementation, a rule can no
+ * longer be added to one of the pair and forgotten on the other.
+ */
 @Injectable()
-export class WarehouseService {
-  constructor(private readonly prisma: PrismaService) {}
-
-  findAll(tenantId?: string) {
-    return this.prisma.warehouse.findMany({
-      where: { ...(tenantId ? { tenantId } : {}) },
-    });
+export class WarehouseService extends LocationService<WarehouseRow> {
+  constructor(prisma: PrismaService, subscriptions: SubscriptionService) {
+    super(prisma, subscriptions, prisma.warehouse, WAREHOUSE_CONFIG);
   }
 
-  // findFirst + explicit throw rather than findFirstOrThrow: Prisma's own not-found error
-  // isn't an HttpException, so Nest turns it into a 500. A row in another tenant must be
-  // indistinguishable from one that doesn't exist — 404 either way, never 403.
-  async findOne(tenantId: string | undefined, id: string) {
-    const found = await this.prisma.warehouse.findFirst({
-      where: { id, ...(tenantId ? { tenantId } : {}) },
-    });
-    if (!found) throw new NotFoundException('Warehouse not found');
-    return found;
-  }
-
-  create(tenantId: string, data: CreateWarehouseDto) {
-    return this.prisma.warehouse.create({ data: { ...data, tenantId } });
-  }
-
-  async update(
-    tenantId: string | undefined,
-    id: string,
-    data: UpdateWarehouseDto,
-  ) {
-    await this.findOne(tenantId, id);
-    return this.prisma.warehouse.update({ where: { id }, data });
-  }
-
-  async remove(tenantId: string | undefined, id: string) {
-    await this.findOne(tenantId, id);
-    return this.prisma.warehouse.delete({ where: { id } });
+  /** Thin wrapper so the response keeps the `warehouseId` key the old API returned. */
+  async assignManager(tenantId: string, warehouseId: string, staffId: string) {
+    const manager = await this.appointManager(tenantId, warehouseId, staffId);
+    return { warehouseId, manager };
   }
 }

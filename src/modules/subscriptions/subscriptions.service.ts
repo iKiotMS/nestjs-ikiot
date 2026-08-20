@@ -1,43 +1,40 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { NotificationService } from '../notifications/notifications.service';
-import { SubscriptionNotificationTemplates } from '../notifications/templates/subscription.templates';
-import { RealtimeGateway } from '../../common/realtime/realtime.gateway';
-import { SepaySubscriptionService } from './sepay-subscription.service';
 import {
   addDays,
   getBillingDays,
   GRACE_PERIOD_DAYS,
-  QR_EXPIRY_MS,
+  wholeDaysBetween,
 } from './subscription.constants';
-import type {
-  Plan,
-  Subscription,
-  SubscriptionInvoice,
-} from '../../../generated/prisma/client';
+import {
+  nextSubscriptionStatus,
+  SubscriptionStatus,
+} from './subscription-status';
+import type { Plan, Subscription } from '../../../generated/prisma/client';
 
-export interface SepayWebhookPayload {
-  transferType?: string;
-  content?: string;
-  transferAmount?: number;
-  referenceCode?: string;
-  id?: number | string;
-}
+/**
+ * Every quota frozen onto a subscription at purchase time. Derived from the schema rather
+ * than listed by hand, so adding a `quotaSnapshotMaxX` column to Subscription makes it
+ * usable here immediately — the old hardcoded two-value union had to be edited first.
+ */
+export type QuotaField = Extract<keyof Subscription, `quotaSnapshot${string}`>;
 
-// Ported from iKiotMS-BE's SubscriptionService (src/modules/subscription/service/SubscriptionService.js).
-// Deliberately covers Plan/Subscription/SubscriptionInvoice together in one service, same
-// as the old one did across all 3 Mongoose models directly — they're written inside the
-// same transactions too often to split cleanly across module boundaries.
+/**
+ * Ported from iKiotMS-BE's SubscriptionService
+ * (src/modules/subscription/service/SubscriptionService.js).
+ *
+ * Owns the *state* of a tenant's subscription: which plan they are on, whether it is still
+ * live, and what their plan lets them do. Everything to do with getting paid — invoices,
+ * QR codes, the SePay webhook — lives next door in SubscriptionBillingService, which the
+ * old single service mixed in with all of this.
+ */
 @Injectable()
 export class SubscriptionService {
-  private readonly logger = new Logger(SubscriptionService.name);
-
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly sepay: SepaySubscriptionService,
-    private readonly notifications: NotificationService,
-    private readonly realtime: RealtimeGateway,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   async assignFreeTrial(tenantId: string, userId: string) {
     const existing = await this.prisma.subscription.findFirst({
@@ -58,14 +55,12 @@ export class SubscriptionService {
       data: {
         tenantId,
         planId: plan.id,
-        status: 'TRIAL',
+        status: SubscriptionStatus.TRIAL,
         startDate,
         endDate: new Date(trialEndDate),
         trialEndDate,
         autoRenew: true,
-        quotaSnapshotMaxBranches: plan.maxBranches,
-        quotaSnapshotMaxUsers: plan.maxUsers,
-        quotaSnapshotMaxProducts: plan.maxProducts,
+        ...quotaSnapshotOf(plan),
         historyLogs: {
           create: {
             event: 'CREATED',
@@ -93,115 +88,126 @@ export class SubscriptionService {
     };
   }
 
-  async checkTrialStatus(tenantId: string) {
+  /**
+   * Returns the subscription with its status already brought up to date in the DB.
+   *
+   * The nightly cron does the same sweep in bulk, but a tenant must never be served on a
+   * term that ran out an hour ago, so every reader goes through here too. The rules
+   * themselves live in `nextSubscriptionStatus` — this only persists what they decide.
+   */
+  private async settleSubscription(
+    tenantId: string,
+  ): Promise<(Subscription & { plan: Plan | null }) | null> {
     const subscription = await this.prisma.subscription.findFirst({
       where: { tenantId },
       include: { plan: true },
     });
+    if (!subscription) return null;
+
+    const status = nextSubscriptionStatus(subscription, new Date());
+    if (status !== subscription.status) {
+      await this.prisma.subscription.update({
+        where: { id: subscription.id },
+        data: { status },
+      });
+      subscription.status = status;
+    }
+    return subscription;
+  }
+
+  async checkTrialStatus(tenantId: string) {
+    const subscription = await this.settleSubscription(tenantId);
     if (!subscription) return { status: 'NO_SUBSCRIPTION' as const };
 
     const now = new Date();
+    const { endDate, trialEndDate, plan } = subscription;
 
-    if (subscription.status === 'TRIAL') {
-      if (subscription.trialEndDate && now > subscription.trialEndDate) {
-        await this.prisma.subscription.update({
-          where: { id: subscription.id },
-          data: { status: 'EXPIRED' },
-        });
+    switch (subscription.status) {
+      case SubscriptionStatus.TRIAL:
         return {
-          status: 'EXPIRED',
-          daysOverdue: this.daysBetween(subscription.trialEndDate, now),
+          status: SubscriptionStatus.TRIAL,
+          daysLeft: trialEndDate ? wholeDaysBetween(now, trialEndDate) : null,
+          trialEndDate,
         };
-      }
-      return {
-        status: 'TRIAL',
-        daysLeft: subscription.trialEndDate
-          ? this.daysBetween(now, subscription.trialEndDate)
-          : null,
-        trialEndDate: subscription.trialEndDate,
-      };
-    }
-
-    if (
-      subscription.status === 'ACTIVE' ||
-      subscription.status === 'PAST_DUE'
-    ) {
-      const endDate = subscription.endDate;
-      const graceCutoff = addDays(now, -GRACE_PERIOD_DAYS);
-
-      if (endDate < graceCutoff) {
-        await this.prisma.subscription.update({
-          where: { id: subscription.id },
-          data: { status: 'EXPIRED' },
-        });
+      case SubscriptionStatus.EXPIRED:
+        // endDate equals trialEndDate for trials (assignFreeTrial sets both), so this is
+        // the right anchor whether the subscription expired as a trial or as a paid term.
         return {
-          status: 'EXPIRED',
-          daysOverdue: this.daysBetween(endDate, now),
+          status: SubscriptionStatus.EXPIRED,
+          daysOverdue: wholeDaysBetween(endDate, now),
         };
-      }
-
-      if (now > endDate) {
-        if (subscription.status === 'ACTIVE') {
-          await this.prisma.subscription.update({
-            where: { id: subscription.id },
-            data: { status: 'PAST_DUE' },
-          });
-        }
+      case SubscriptionStatus.PAST_DUE:
         return {
-          status: 'PAST_DUE',
-          daysOverdue: this.daysBetween(endDate, now),
+          status: SubscriptionStatus.PAST_DUE,
+          daysOverdue: wholeDaysBetween(endDate, now),
           gracePeriodEndsAt: addDays(endDate, GRACE_PERIOD_DAYS),
           endDate,
-          planCode: subscription.plan?.planCode,
+          planCode: plan?.planCode,
         };
-      }
-
-      return {
-        status: 'ACTIVE',
-        daysLeft: this.daysBetween(now, endDate),
-        endDate,
-        planCode: subscription.plan?.planCode,
-      };
+      case SubscriptionStatus.ACTIVE:
+        return {
+          status: SubscriptionStatus.ACTIVE,
+          daysLeft: wholeDaysBetween(now, endDate),
+          endDate,
+          planCode: plan?.planCode,
+        };
+      default:
+        return { status: subscription.status };
     }
-
-    return { status: subscription.status };
   }
 
-  async initiateUpgrade(tenantId: string, planCode: string) {
-    const currentSubscription = await this.prisma.subscription.findFirst({
-      where: { tenantId },
-    });
-    if (!currentSubscription)
-      throw new BadRequestException('No active subscription found');
-
-    const newPlan = await this.prisma.plan.findFirst({
-      where: { planCode, isActive: true },
-    });
-    if (!newPlan)
-      throw new BadRequestException(`Plan ${planCode} not found or inactive`);
-    if (Number(newPlan.price) === 0)
-      throw new BadRequestException('Use free-trial endpoint for free plans');
-
-    return this.createPlanInvoice(currentSubscription, newPlan);
-  }
-
-  async initiateRenewal(tenantId: string) {
-    const currentSubscription = await this.prisma.subscription.findFirst({
-      where: { tenantId },
-      include: { plan: true },
-    });
-    if (!currentSubscription)
-      throw new BadRequestException('No subscription found');
-
-    const currentPlan = currentSubscription.plan;
-    if (!currentPlan) throw new BadRequestException('Current plan not found');
-    if (currentPlan.planCode === 'TRIAL' || Number(currentPlan.price) === 0) {
-      throw new BadRequestException(
-        'Trial plan cannot be renewed. Please upgrade to a paid plan.',
+  /**
+   * The equivalent of iKiotMS-BE's `requireActiveSubscription` middleware, as a service
+   * call instead of a guard: callers need the row itself (for its quota snapshot), not
+   * just a yes/no. PAST_DUE deliberately passes — that is what the grace period is for.
+   */
+  async requireActiveSubscription(
+    tenantId: string,
+  ): Promise<Subscription & { plan: Plan | null }> {
+    const subscription = await this.settleSubscription(tenantId);
+    if (!subscription) {
+      throw new ForbiddenException('Cửa hàng chưa có gói dịch vụ nào');
+    }
+    if (subscription.status === SubscriptionStatus.EXPIRED) {
+      throw new ForbiddenException(
+        'Gói dịch vụ đã hết hạn. Vui lòng gia hạn để tiếp tục sử dụng.',
       );
     }
+    if (subscription.status === SubscriptionStatus.CANCELLED) {
+      throw new ForbiddenException(
+        'Gói dịch vụ đã bị huỷ. Vui lòng đăng ký lại để tiếp tục sử dụng.',
+      );
+    }
+    return subscription;
+  }
 
-    return this.createPlanInvoice(currentSubscription, currentPlan);
+  /**
+   * Shared quota gate for the "how many X can this tenant have" limits frozen onto the
+   * subscription at purchase time.
+   *
+   * A negative limit (`-1`, what the plans use) means unlimited, and so does `null` — a
+   * row written before the column existed. `0` is a real limit of zero and blocks
+   * everything; it used to be lumped in with "unlimited", which turned a plan configured
+   * to allow no branches at all into a plan that allowed any number of them.
+   *
+   * `count` is a thunk so no counting query runs for tenants on an unlimited plan.
+   */
+  async assertQuota(
+    tenantId: string,
+    quota: QuotaField,
+    count: () => Promise<number>,
+    label: string,
+  ): Promise<void> {
+    const subscription = await this.requireActiveSubscription(tenantId);
+    const max = subscription[quota];
+    if (max === null || max < 0) return;
+
+    const current = await count();
+    if (current >= max) {
+      throw new BadRequestException(
+        `Đã đạt giới hạn ${label} của gói dịch vụ (tối đa ${max}, hiện có ${current}). Vui lòng nâng cấp gói.`,
+      );
+    }
   }
 
   /** Admin-only: change a tenant's plan directly, no payment involved. */
@@ -230,23 +236,22 @@ export class SubscriptionService {
         })
       : null;
 
+    const now = new Date();
     const updated = await this.prisma.subscription.update({
       where: { id: currentSubscription.id },
       data: {
         planId: newPlan.id,
-        status: 'ACTIVE',
-        startDate: new Date(),
-        endDate: addDays(new Date(), getBillingDays(newPlan.billingCycle)),
+        status: SubscriptionStatus.ACTIVE,
+        startDate: now,
+        endDate: addDays(now, getBillingDays(newPlan.billingCycle)),
         trialEndDate: null,
-        quotaSnapshotMaxBranches: newPlan.maxBranches,
-        quotaSnapshotMaxUsers: newPlan.maxUsers,
-        quotaSnapshotMaxProducts: newPlan.maxProducts,
+        ...quotaSnapshotOf(newPlan),
         historyLogs: {
           create: {
             event: 'UPGRADED',
             fromPlanId: currentSubscription.planId,
             toPlanId: newPlan.id,
-            changedAt: new Date(),
+            changedAt: now,
             changedById: adminUserId,
             note: `Upgraded from ${oldPlan?.planCode ?? 'unknown'} to ${newPlanCode}`,
           },
@@ -256,201 +261,24 @@ export class SubscriptionService {
 
     return { subscription: updated, oldPlan, newPlan };
   }
+}
 
-  async handleSepayWebhook(
-    apiKey: string,
-    payload: SepayWebhookPayload,
-  ): Promise<{ httpStatus: number; body: Record<string, unknown> }> {
-    try {
-      if (!this.sepay.verifyWebhookKey(apiKey)) {
-        return {
-          httpStatus: 401,
-          body: { success: false, message: 'Invalid API key' },
-        };
-      }
-      if (payload.transferType !== 'in') {
-        return { httpStatus: 200, body: { success: true } };
-      }
-
-      const paymentReference = this.sepay.extractReference(
-        payload.content ?? '',
-      );
-      if (!paymentReference) {
-        return {
-          httpStatus: 200,
-          body: { success: true, message: 'No matching reference found' },
-        };
-      }
-
-      const invoice = await this.prisma.subscriptionInvoice.findFirst({
-        where: { paymentReference, status: 'PENDING' },
-      });
-      if (!invoice) {
-        return {
-          httpStatus: 200,
-          body: {
-            success: true,
-            message: 'Invoice not found or already processed',
-          },
-        };
-      }
-
-      if ((payload.transferAmount ?? 0) < Number(invoice.amount)) {
-        this.logger.warn(
-          `Underpaid invoice ${invoice.id}. Expected ${invoice.amount.toString()}, got ${payload.transferAmount}`,
-        );
-        return {
-          httpStatus: 200,
-          body: { success: true, message: 'Underpaid — ignored' },
-        };
-      }
-
-      const subscription = await this.activateAfterPayment(invoice, payload);
-
-      const owners = await this.notifications.tenantOwners(invoice.tenantId);
-      await this.notifications.notify({
-        tenantId: invoice.tenantId,
-        recipientIds: owners,
-        referenceId: invoice.id,
-        ...SubscriptionNotificationTemplates.activated(),
-      });
-      this.realtime.emitToRoom(
-        `tenant:${invoice.tenantId}`,
-        'subscription:activated',
-        {
-          invoiceId: invoice.id,
-          planId: subscription.planId,
-          status: subscription.status,
-          endDate: subscription.endDate,
-        },
-      );
-
-      return {
-        httpStatus: 200,
-        body: { success: true, message: 'Subscription activated' },
-      };
-    } catch (error) {
-      // Always 200 on unexpected error too — SePay must not retry indefinitely on our bugs.
-      this.logger.error(
-        'SePay webhook error',
-        error instanceof Error ? error.stack : error,
-      );
-      return {
-        httpStatus: 200,
-        body: {
-          success: false,
-          message: error instanceof Error ? error.message : 'Unknown error',
-        },
-      };
-    }
-  }
-
-  private async activateAfterPayment(
-    invoice: SubscriptionInvoice,
-    sepayPayload: SepayWebhookPayload,
-  ): Promise<Subscription> {
-    const plan = await this.prisma.plan.findUnique({
-      where: { id: invoice.planId },
-    });
-    if (!plan) throw new Error('Plan not found');
-
-    const subscription = await this.prisma.subscription.findUnique({
-      where: { id: invoice.subscriptionId },
-    });
-    if (!subscription) throw new Error('Subscription not found');
-
-    const oldPlanId = subscription.planId;
-    const isRenewal = oldPlanId === invoice.planId;
-
-    const billingStart = new Date();
-    const billingEnd = addDays(billingStart, getBillingDays(plan.billingCycle));
-
-    const [updatedSubscription] = await this.prisma.$transaction([
-      this.prisma.subscription.update({
-        where: { id: subscription.id },
-        data: {
-          planId: plan.id,
-          status: 'ACTIVE',
-          startDate: billingStart,
-          endDate: billingEnd,
-          trialEndDate: null,
-          quotaSnapshotMaxBranches: plan.maxBranches,
-          quotaSnapshotMaxUsers: plan.maxUsers,
-          quotaSnapshotMaxProducts: plan.maxProducts,
-          historyLogs: {
-            create: {
-              event: isRenewal ? 'RENEWED' : 'UPGRADED',
-              fromPlanId: oldPlanId,
-              toPlanId: plan.id,
-              changedAt: new Date(),
-              // No acting user for a webhook-triggered activation — iKiotMS-BE stored
-              // tenantId here instead, which read confusingly in a "changed by user" field.
-              changedById: null,
-              note: isRenewal
-                ? `Renewed ${plan.planCode} via SePay (ref: ${invoice.paymentReference})`
-                : `Upgraded to ${plan.planCode} via SePay (ref: ${invoice.paymentReference})`,
-            },
-          },
-        },
-      }),
-      this.prisma.subscriptionInvoice.update({
-        where: { id: invoice.id },
-        data: {
-          status: 'PAID',
-          paidAt: new Date(),
-          transactionRef:
-            sepayPayload.referenceCode ?? String(sepayPayload.id ?? ''),
-        },
-      }),
-    ]);
-
-    return updatedSubscription;
-  }
-
-  private async createPlanInvoice(
-    subscription: Pick<Subscription, 'id' | 'tenantId'>,
-    plan: Plan,
-  ) {
-    await this.prisma.subscriptionInvoice.updateMany({
-      where: {
-        tenantId: subscription.tenantId,
-        planId: plan.id,
-        status: 'PENDING',
-      },
-      data: { status: 'FAILED' },
-    });
-
-    const billingStart = new Date();
-    const billingEnd = addDays(billingStart, getBillingDays(plan.billingCycle));
-    const paymentReference = this.sepay.generatePaymentReference();
-
-    const invoice = await this.prisma.subscriptionInvoice.create({
-      data: {
-        subscriptionId: subscription.id,
-        tenantId: subscription.tenantId,
-        planId: plan.id,
-        amount: plan.price,
-        currency: 'VND',
-        status: 'PENDING',
-        paymentReference,
-        paymentMethod: 'SEPAY',
-        billingPeriodStart: billingStart,
-        billingPeriodEnd: billingEnd,
-      },
-    });
-
-    const amount = Number(plan.price);
-    return {
-      invoiceId: invoice.id,
-      paymentReference,
-      amount,
-      plan: { planCode: plan.planCode, planName: plan.planName },
-      qrDataUrl: this.sepay.buildQrUrl(amount, paymentReference),
-      expiredAt: new Date(Date.now() + QR_EXPIRY_MS),
-    };
-  }
-
-  private daysBetween(earlier: Date, later: Date): number {
-    return Math.ceil((later.getTime() - earlier.getTime()) / 86_400_000);
-  }
+/**
+ * Freezes the plan's limits onto the subscription. Quotas are snapshotted at purchase time
+ * and never read live off the Plan, so a later price-list change can't retroactively shrink
+ * an existing customer — which also means every write site has to copy all four fields, and
+ * this is the one place that does it.
+ */
+export function quotaSnapshotOf(
+  plan: Pick<
+    Plan,
+    'maxBranches' | 'maxWarehouses' | 'maxUsers' | 'maxProducts'
+  >,
+): Pick<Subscription, QuotaField> {
+  return {
+    quotaSnapshotMaxBranches: plan.maxBranches,
+    quotaSnapshotMaxWarehouses: plan.maxWarehouses,
+    quotaSnapshotMaxUsers: plan.maxUsers,
+    quotaSnapshotMaxProducts: plan.maxProducts,
+  };
 }

@@ -1,4 +1,5 @@
 import { IsIn, IsOptional, IsUUID } from 'class-validator';
+import { SETTABLE_USER_STATUSES } from '../../../common/constants/user-status';
 
 // Deliberately excludes password/phoneNumber (self-service only, via /auth) and
 // systemRole (a STAFF account can never be promoted to TENANT_OWNER/ADMIN through this
@@ -17,6 +18,6 @@ export class UpdateUserDto {
   warehouseId?: string;
 
   @IsOptional()
-  @IsIn(['ACTIVE', 'INACTIVE', 'SUSPENDED'])
+  @IsIn(SETTABLE_USER_STATUSES)
   status?: string;
 }

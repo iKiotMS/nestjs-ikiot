@@ -1,16 +1,20 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
-import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import {
+  APP_FILTER,
+  APP_GUARD,
+  APP_INTERCEPTOR,
+  DiscoveryModule,
+} from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
-import { PrismaService } from './prisma/prisma.service';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { PermissionsGuard } from './common/guards/permissions.guard';
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { RealtimeModule } from './common/realtime/realtime.module';
-import { SubscriptionAuditTemplate } from './modules/subscriptions/subscription.audit-template';
+import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 
 import { AuthModule } from './modules/auth/auth.module';
 import { RolesModule } from './modules/roles/roles.module';
@@ -52,6 +56,8 @@ import { WorkingScheduleModule } from './modules/working-schedules/working-sched
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     ScheduleModule.forRoot(),
+    // Lets AuditInterceptor find every @AuditTemplate() provider on its own.
+    DiscoveryModule,
     PrismaModule,
     RealtimeModule,
     AuthModule,
@@ -96,17 +102,13 @@ import { WorkingScheduleModule } from './modules/working-schedules/working-sched
     // Order matters: JwtAuthGuard populates request.user before PermissionsGuard reads it.
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
-    // Composition root for AuditInterceptor's domain-specific descriptors — add one
-    // inject entry per module that gets its own `*.audit-template.ts` from here on.
-    // AuditInterceptor itself must stay generic; see CLAUDE.md "Audit logging".
-    {
-      provide: APP_INTERCEPTOR,
-      useFactory: (
-        prisma: PrismaService,
-        subscriptionAuditTemplate: SubscriptionAuditTemplate,
-      ) => new AuditInterceptor(prisma, [subscriptionAuditTemplate]),
-      inject: [PrismaService, SubscriptionAuditTemplate],
-    },
+    // Domain-specific audit descriptions are discovered from their own modules via
+    // @AuditTemplate() — nothing to register here. AuditInterceptor itself must stay
+    // generic; see CLAUDE.md "Audit logging".
+    { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
+    // Last line of defence: turns Prisma (and any other non-HttpException) error into a
+    // real status code instead of a bare 500.
+    { provide: APP_FILTER, useClass: AllExceptionsFilter },
   ],
 })
 export class AppModule {}
