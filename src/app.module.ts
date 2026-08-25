@@ -37,7 +37,6 @@ import { PayrollSettingModule } from './modules/payroll-settings/payroll-setting
 import { PaysheetModule } from './modules/paysheets/paysheets.module';
 import { PayslipModule } from './modules/payslips/payslips.module';
 import { PlanModule } from './modules/plans/plans.module';
-import { ProductItemModule } from './modules/product-items/product-items.module';
 import { ProductModule } from './modules/products/products.module';
 import { PromotionLogModule } from './modules/promotion-logs/promotion-logs.module';
 import { PromotionModule } from './modules/promotions/promotions.module';
@@ -81,7 +80,6 @@ import { WorkingScheduleModule } from './modules/working-schedules/working-sched
     PaysheetModule,
     PayslipModule,
     PlanModule,
-    ProductItemModule,
     ProductModule,
     PromotionLogModule,
     PromotionModule,

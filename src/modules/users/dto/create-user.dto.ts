@@ -10,8 +10,12 @@ import {
 // system's separate INACTIVE→"create account"→ACTIVE step is deferred; note this if you
 // need an invite-style onboarding flow later.
 export class CreateUserDto {
+  /**
+   * Shape is checked in the service by `validateVietnamPhoneNumber` — it is the login
+   * handle and the OTP destination, so it has to be a number that can actually receive an
+   * SMS, which a length rule can't express.
+   */
   @IsString()
-  @MinLength(8)
   phoneNumber: string;
 
   @IsOptional()

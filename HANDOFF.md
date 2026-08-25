@@ -146,6 +146,114 @@ Không thêm module mới. Đây là đợt dọn: 5 lỗ hổng/thiếu sót th
 
 **Kiểm chứng**: `tsc --noEmit` sạch · `pnpm run lint` sạch · `pnpm run build` sạch · `node scripts/check-permissions.js` OK (3 cặp `subscriptions:*` mới đều có sẵn trong catalog, không phải sửa seed) · unit **8/8** (thêm `subscription-status.spec.ts`) · thêm `test/di-check.e2e-spec.ts` **2/2** — spec này chỉ `.compile()` DI graph, **không cần database**, và kiểm rằng `@AuditTemplate()` thật sự được discovery tìm thấy (nếu không, audit chỉ âm thầm rơi về mô tả generic chứ không lỗi). **Chưa chạy được e2e đầy đủ**: Docker Desktop không chạy trên máy lúc làm, nên các e2e cần Postgres chưa xác minh — chạy lại `docker compose up -d && pnpm run test:e2e` trước khi commit.
 
+### 2026-08-25 — port thật module Product + Inventory
+
+Chủ dự án chốt rút gọn thứ tự build: làm trước nhóm **2 (Staff), 4 (Sản phẩm/kho), 5 (Bán hàng), 6 (Còn lại)**; nhóm 1 (cấu hình nhân sự) và 3 (chấm công/nghỉ phép) để sau. Bắt đầu bằng product + inventory.
+
+**Route đã có** (11 + 4, khớp bản cũ trừ 2 chỗ ghi ở dưới)
+
+58. `products`: `POST/GET/PATCH/DELETE /products`, `GET /products/:id`, `GET /products/search` (tra cứu kiểu POS), `GET /products/items` (danh sách phẳng cho dropdown), `POST /products/:productId/items`, `PATCH|DELETE /products/items/:itemId`, `POST /products/items/:itemId/suppliers`. `inventories`: `GET /inventory`, `PATCH /inventory/:id/min-stock`, `POST /inventory`, `DELETE /inventory/:id` — giữ path `/inventory` số ít như API cũ và như tên resource trong catalog.
+59. **Bẫy thứ tự route**: `GET /products/items` và `/products/search` phải khai **trên** `GET /products/:id`, nếu không router hiểu chúng là product id. Đúng cái bẫy mà module Express cũ đã ghi comment cảnh báo.
+
+**Lỗ hổng bản cũ đã vá**
+
+60. **Toàn bộ 11 route product của bản cũ chạy trên `verifyJwt` trần, không có `authorize()` nào.** Bất kỳ tài khoản nào đăng nhập được — kể cả CUSTOMER — đều tạo/sửa/ngừng kinh doanh được cả catalogue của cửa hàng. Resource `products` **đã có sẵn** trong `permissions.json` từ đầu, chỉ là không ai gắn vào route. Giờ đủ `products:create/read/update/delete`.
+61. **`createProduct` bản cũ bọc toàn bộ thân hàm trong `if (subscription)`** — tenant không có gói thì hàm trả `undefined` và API trả **HTTP 200**: không tạo gì, không báo gì. Giờ đi qua `assertQuota('quotaSnapshotMaxProducts')`, đếm sản phẩm khác DISCONTINUED; không có gói là 403 rõ ràng.
+62. **`categoryName` không còn nhận từ client.** Nó là bản copy denormalized; để client tự khai nghĩa là sản phẩm gắn nhãn danh mục mà nó không thuộc về. Server tự lấy từ `categoryId`, và **`CategoryService.update` giờ cập nhật lại `categoryName` cho mọi sản phẩm khi đổi tên danh mục** — đúng khoản nợ ghi ngày 19/8 ("xử lý khi port module products").
+63. **Xoá variant giờ kiểm đủ 4 bảng tham chiếu** (inventory, order item, stock movement item, promotion item), bản cũ chỉ kiểm inventory. Trong Mongo mấy tham chiếu kia chỉ là ref treo; ở Postgres là FK thật, nên check cũ sẽ nổ thành lỗi ràng buộc không nói được gì cho người dùng.
+64. **Xoá module `product-items`** (CRUD sinh tự động ở `/product-items`). Để lại là có một đường vòng tạo/xoá variant **không đi qua** kiểm SKU trùng, không đi qua các check ở mục 63. Variant giờ chỉ vào được qua `/products/...`. `Product`/`ProductItem`/`Inventory` đã thêm vào `PORTED_MODELS`.
+65. **Quyền inventory**: thêm/gỡ mặt hàng ở một địa điểm bản cũ chặn bằng `role in (TENANT_OWNER, WAREHOUSE_MANAGER)`. Cả role đó lẫn cách chặn theo role đều không còn — giờ là `inventory:create` / `inventory:delete`, tenant tự quyết cấp cho role nào (đúng cách đã thay thế cho việc bổ nhiệm quản lý chi nhánh/kho).
+
+**Dùng chung mới**
+
+66. **`src/common/dto/location-ref.dto.ts`** — Inventory trỏ tới "chi nhánh hoặc kho": Mongo lưu `locationId`+`locationType`, Postgres lưu cặp FK nullable `branch_id`/`warehouse_id`. File này là **chỗ duy nhất** map giữa hai bên, API giữ nguyên cặp cũ nên frontend không phải sửa (cùng kiểu đánh đổi với `attendance-location.dto.ts`). `toLocationColumns` cho write, `toLocationRef` cho response, `locationWhere` cho filter. `LocationRefQueryDto` giữ luật "có locationId thì bắt buộc có locationType", các query DTO ghép bằng `IntersectionType` thay vì chép lại. Có unit test.
+67. **`src/common/constants/product-status.ts`** và **`location-type.ts`** — bản cũ chép mảng `["ACTIVE","INACTIVE","DISCONTINUED"]` ở 3 DTO khác nhau. `location-type.ts` cố ý viết thường (`"branch"/"warehouse"`) vì đó đúng là chuỗi frontend đang gửi và đọc.
+68. **`NotificationService.managersOfLocation()`** đã port — nhưng đọc `Branch.managerId`/`Warehouse.managerId` thay cho role BRANCH_MANAGER/WAREHOUSE_MANAGER đã bị xoá, và **fallback về chủ cửa hàng** khi địa điểm chưa có quản lý. Bản cũ trả mảng rỗng, tức là cảnh báo tồn kho thấp của một chi nhánh chưa có quản lý gửi cho **không ai cả**.
+
+**Primitive tồn kho (để dành cho Order / StockMovement)**
+
+69. `adjustStock` / `lowStockCrossing` / `notifyLowStock` nằm trong `InventoryService` chứ không nằm ở module gọi nó — "kho thay đổi thế nào và khi nào thì cảnh báo" là **một luật**, chép một bản sang bán hàng và một bản sang chuyển kho là cách chắc chắn để hai bên lệch nhau. Hai điểm phải nhớ khi port Order/StockMovement:
+    - `adjustStock` và `initializeStock` nhận **transaction client**, không phải `this.prisma`. Đơn hàng rollback mà kho vẫn bị trừ là failure mode ở đây.
+    - `notifyLowStock` gọi **sau khi transaction commit** và không bao giờ ném lỗi. Kho đã trừ, đơn đã xong rồi — lỗi gửi thông báo không được phép làm hỏng ca bán hàng.
+70. Luật cảnh báo tách thành hàm thuần `crossedLowStock` (`low-stock.ts`) có unit test riêng, giống cách `nextSubscriptionStatus` đã làm. Nó **edge-trigger**: chỉ bắn đúng bước vượt ngưỡng. Bắn mỗi lần `stock <= minStock` nghĩa là mỗi lần bán tiếp một món đang thiếu lại bắn thêm một cái, và quản lý tắt noti ngay ngày đầu — lúc đó cảnh báo thật cũng không ai thấy nữa. Test viết theo đúng failure mode đó.
+
+**Đổi API mà frontend sẽ thấy** (cần báo team FE)
+
+71. `DELETE /products/:id/delete` → **`DELETE /products/:id`**, và `DELETE /products/items/:itemId/delete` → **`DELETE /products/items/:itemId`**. Hậu tố `/delete` không chỗ nào khác trong cả hai codebase dùng. Nếu FE chưa sửa kịp thì nói, thêm lại alias không tốn gì.
+72. `VAT` → `vat` trong request/response của variant, khớp tên cột.
+73. `GET /inventory` trả `location: {locationId, locationType}` (object) thay vì hai field phẳng `locationId`/`locationType` ở gốc như bản cũ.
+
+**Kiểm chứng**: `tsc --noEmit` sạch · `pnpm run lint` sạch · `pnpm run build` sạch · `node scripts/check-permissions.js` OK (không phải sửa seed — `products:*` và `inventory:*` đã có đủ trong catalog) · unit **22/22** (thêm `low-stock.spec.ts` và `location-ref.spec.ts`) · `test/di-check.e2e-spec.ts` 2/2, đã thêm assert cho `ProductService`/`InventoryService`.
+
+**CHƯA chạy được với database thật** — Docker Desktop vẫn không chạy trên máy (lần thứ hai, sau đợt 20/8). Nghĩa là **chưa có dòng nào của module này chạm vào Postgres thật**: chưa verify được quota, transaction tạo sản phẩm + variant + tồn kho ban đầu, cross-tenant 404, hay filter `isLowStock` (dùng field-reference của Prisma `stock <= minStock` — đây là chỗ tôi ít chắc nhất, nó compile được nhưng chưa từng chạy). Việc đầu tiên của phiên sau: `docker compose up -d && pnpm run test:e2e`, rồi test tay theo kịch bản như đợt 19/8.
+
+### 2026-08-25, phần 2 — port thật Staff (5 route còn thiếu) + Stock Movement
+
+**Staff — 5 route còn thiếu, gắn vào module `users`**
+
+74. `POST|PATCH /users/:id/leave-balance`, `POST /users/:id/account`, `PATCH /users/:id/account/password`, `PATCH /users/:id/account/deactivate`. Giữ nguyên sub-path cũ, chỉ đổi tiền tố `/staff` → `/users` (đã đổi từ 17/8). Quyền dùng **`users:update`** chứ không phải `staff:update`: catalog có cả hai resource cho cùng một thứ, mà module này xưa nay check `users` — để hai resource song song chính là cách một quyền bị cấp ở chỗ này nhưng kiểm ở chỗ kia. `staff:*` giờ là legacy.
+75. **`GET /staff/roles` không port lại.** Nó trả enum role cố định mà người gọi được phép gán; role giờ là dòng dữ liệu do tenant tự định nghĩa nên câu trả lời đúng là `GET /roles`.
+76. **Phần lớn `StaffService` cũ (1129 dòng) là plumbing phân cấp role** — ai được sửa ai, theo BRANCH_MANAGER / WAREHOUSE_MANAGER / STAFF. Không port dòng nào: các role đó đã bị xoá từ đợt RBAC, "ai được sửa nhân viên" giờ là đúng một quyền.
+77. **Xoá nhân viên giờ ẩn danh dữ liệu** (`anonymizeDeletedStaff` bản cũ): giữ dòng (orders/attendances/payslips/audit log đều trỏ FK vào) nhưng xoá dữ liệu cá nhân, và `phoneNumber` thành `deleted_<id>` — nó là handle đăng nhập, để nguyên là **không bao giờ tuyển lại được người đó bằng số cũ**. Lần port NestJS trước rút gọn hàm này còn mỗi việc đổi status; giờ đã đủ, kèm `deletedById` + `deletionReason` (2 cột có sẵn mà chưa ai ghi).
+78. **Vô hiệu hoá tài khoản xoá luôn password** ngoài việc đổi status, nên token đang cầm bị chặn ngay request kế tiếp (INACTIVE nằm trong `INACTIVE_USER_STATUSES`).
+79. **Hai guard chung cho cả deactivate và delete**: (a) không được đang là người nhận bàn giao của đơn nghỉ còn hiệu lực; (b) không được đang là quản lý của chi nhánh/kho. Bản cũ nhận `replacementManagerId` rồi tự swap quản lý ngay trong hàm; giờ việc bổ nhiệm là `PATCH /branches/:id/manager`, nên ở đây **từ chối và chỉ sang đó** — một luật bổ nhiệm, một chỗ.
+80. **Leave balance**: `remainingDays` được **tính lại** = hạn mức mới − số ngày đã dùng, không ghi đè, nên nâng quota giữa năm không trả lại ngày đã nghỉ. `POST` (khởi tạo) chỉ hợp lệ khi chưa dùng ngày nào. Cả hai đường ghi đều qua `updateMany` có điều kiện giá trị cũ — hai quản lý sửa cùng lúc, hoặc sửa lúc đơn nghỉ vừa duyệt, sẽ 409 thay vì đè lên nhau (đúng trick `SupplierService.payDebt`). Thêm chặn trên `Max(365)` — DTO cũ nhận mọi số nguyên không âm nên gõ nhầm là ai đó có 3650 ngày phép.
+
+**Stock Movement — 10 route, đủ máy trạng thái**
+
+81. `POST`, `GET`, `GET /:id`, `PATCH /:id/{details,open,close,ship,receive,approve-adjust,cancel}` tại `/stock-movements`, đúng path và đúng quyền bản cũ (`approve` cho ship + duyệt kiểm kê, `receive`, `cancel`). **Không có DELETE** — phiếu là chứng từ về hàng đã đi thật, chỉ huỷ chứ không xoá. Cặp `stock_movement:delete` mà CRUD sinh tự động đẻ ra giờ thành không dùng.
+82. **4 loại phiếu, 2 dạng vòng đời**: `EXPORT`/`RETURN` (giữa 2 địa điểm của mình) đi `DRAFT → OPENING → CLOSED → IN_TRANSIT → RECEIVED`; `IMPORT` (từ NCC) và `ADJUST` (kiểm kê tại 1 địa điểm) mở thẳng ở `PENDING` vì không có gì để soạn hàng, và `ADJUST` kết thúc ở `COMPLETED` chứ không phải `RECEIVED` vì chẳng có gì tới nơi.
+83. **Kho chỉ đổi ở 4 chỗ**: `ship` trừ nguồn (chỉ phiếu chuyển), `receive` cộng đích theo số **thực nhận** (giao thiếu là bình thường, phần thiếu đơn giản là không cộng), `approve-adjust` áp `thực đếm − hệ thống`, `cancel` trả lại phần `ship` đã trừ nếu phiếu còn IN_TRANSIT. Cả 4 đều ghi kho và ghi status **trong cùng một transaction**, và bắn thông báo **sau khi commit**.
+84. **Hạn mức công nợ NCC đã được kiểm — đúng khoản nợ ghi từ 19/8.** Kiểm ở 3 chỗ: lúc tạo phiếu, lúc sửa details, và **lại lần nữa bên trong transaction nhận hàng** sau khi cộng nợ (nhiều phiếu nhập có thể mở cùng lúc với một NCC, chỉ phiếu thật sự về mới tính; vượt ở đây thì ném lỗi và rollback cả phiếu nhận). `creditLimit <= 0` nghĩa là không giới hạn, khớp cách seed.
+85. **Cảnh báo 75% hạn mức** tách thành hàm thuần `crossedCreditWarning` có unit test riêng, **edge-trigger** y hệt `crossedLowStock`: chỉ bắn đúng phiếu vượt ngưỡng, không bắn mỗi phiếu nhập sau đó. Đây là lần thứ hai áp cùng một khuôn — nếu sau này có cảnh báo ngưỡng thứ ba thì làm y như vậy.
+86. **Phân quyền theo địa điểm là THAY THẾ, không phải port.** Bản cũ rẽ nhánh theo BRANCH_MANAGER / WAREHOUSE_MANAGER và theo `managedScheduleAccess` (quyền tạm do lịch làm việc cấp). Không cái nào còn: 2 role đã xoá, còn module WorkingSchedule nằm trong nhóm hoãn. Thay bằng: TENANT_OWNER thao tác được mọi địa điểm của tenant, STAFF thao tác được đúng nơi mình trực thuộc (`User.branchId`/`warehouseId`). **`canActAt()` là seam duy nhất** — khi port WorkingSchedule thì nới đúng chỗ đó, không đụng gì khác.
+87. Hai luật theo role bị **bỏ hẳn thay vì dịch**: "branch manager không được tạo IMPORT" (giờ là chuyện ai được cấp `stock_movement:create`) và "branch manager không được EXPORT về kho" — cái sau sống sót dưới dạng luật về chính cái phiếu: chi nhánh → kho là RETURN, ai làm cũng vậy (`assertTransferMakesSense`).
+88. `OPEN_MOVEMENT_STATUSES` (danh sách trạng thái "phiếu chưa xong") giờ khai một lần ở `stock-movement.constants.ts`; `ProductService` (chặn ngừng kinh doanh sản phẩm đang nằm trong phiếu dở) import từ đó thay vì giữ bản chép riêng — bản chép đó tôi vừa tạo hôm nay ở mục 63, gom lại luôn trước khi nó kịp lệch.
+89. `StockMovementRequest` đã thêm vào `PORTED_MODELS`. `NotificationService.managersOfLocation` (port hôm nay ở mục 68) được dùng thật ở đây — thông báo đi tới quản lý địa điểm gửi/nhận, và **người bấm nút luôn bị loại khỏi danh sách nhận**: không ai cần được báo về việc mình vừa làm.
+
+**Kiểm chứng**: `tsc --noEmit` sạch · `pnpm run lint` sạch · `pnpm run build` sạch · `node scripts/check-permissions.js` OK (không phải sửa seed) · unit **28/28** (thêm `credit-warning.spec.ts`) · di-check 2/2, đã thêm assert cho `StockMovementService` và `UserService`.
+
+**Vẫn CHƯA chạm database thật** — Docker Desktop vẫn không chạy (lần thứ ba). Với stock movement thì đây là thiếu sót nặng hơn hẳn product/inventory: **toàn bộ máy trạng thái, mọi transaction cộng/trừ kho, và cả 3 điểm kiểm hạn mức công nợ đều chưa từng chạy một lần nào.** Đừng commit trước khi test tay đủ 4 loại phiếu qua từng bước.
+
+### 2026-08-25, phần 3 — review đối chiếu bản cũ rồi sửa những gì lệch
+
+Đọc lại 4 module vừa port và so từng luồng với `iKiotMS-BE`. Review nêu 3 lỗi thật, 8 đổi hành vi chưa báo, 2 chỗ nới quyền, 3 chỗ thiếu. Chủ dự án chọn sửa: 1.1, 1.3, revert 2.5 + 2.6, và bù 5.2 + 5.3.
+
+90. **`PATCH /users/:id` từng đi vòng qua toàn bộ guard vô hiệu hoá tài khoản.** `UpdateUserDto` nhận `status` và `update()` ghi thẳng, nên set `INACTIVE` qua đây **bỏ qua** cả 3 thứ mới thêm hôm nay: không kiểm người đang nhận bàn giao, không kiểm đang là quản lý chi nhánh/kho, **không xoá password** (bật lại là đăng nhập được bằng mật khẩu cũ). Bản cũ `updateStaff` **cấm hẳn** field này — `if (Object.hasOwn(data, "status")) throw` — chính là để bắt đi qua route deactivate. Đã bỏ `status` khỏi DTO. Vòng đời tài khoản giờ chỉ đi qua `POST /users/:id/account` và `PATCH /users/:id/account/deactivate`.
+91. **`adjustStock` trả lại tính nguyên tử.** Bản cũ là `findOneAndUpdate({$inc}, {upsert:true})` — một lệnh. Bản tôi viết là `findFirst` → `create`/`update`, có khe hở: hai lần nhận hàng đồng thời vào một địa điểm **chưa từng có** mặt hàng đó, cả hai đọc ra null, cả hai insert, một cái chết vì unique index. Giờ dùng `upsert`. **Phải chọn đúng 1 trong 2 unique index tuỳ đầu nào được set** — trong Postgres unique index có cột NULL thì không ràng buộc gì, nên `(tenant, branch, item)` chỉ có tác dụng với dòng chi nhánh và `(tenant, warehouse, item)` chỉ với dòng kho.
+92. **Revert 2 response về đúng bản cũ**: `DELETE /inventory/:id` trả `{success: true}` (không phải `{id, removed}`), và 2 route leave-balance trả `{message, data, leaveBalance}` (không phải `{user, leaveBalance}`).
+93. **`GET /users` giờ có phân trang + filter** như `getStaffList` cũ: `page`/`limit`/`search`/`status`/`roleId`/`branchId`/`warehouseId`, trả envelope `{data, pagination}`. Trước đó trả **toàn bộ nhân viên, không phân trang, không filter** — tenant vài trăm người là payload không dùng được. Giữ 2 luật của bản cũ: **chỉ hiện tài khoản STAFF** (chủ cửa hàng không nằm trong danh sách nhân viên của chính mình) và **loại chính người gọi** ra khỏi danh sách. Đổi tên tham số `recordPerPage`→`limit`, `keyword`→`search` cho khớp 5 list endpoint đã port khác; `role` (enum cũ) → `roleId` (uuid, vì role giờ là dữ liệu).
+94. **`PATCH /users/:id` giờ sửa được cả hồ sơ** — email, `hireDate`, `paysheetId`, `accountNote` và object `profile` lồng (firstName, lastName, avatarUrl, dob, taxNumber, identificationId, address, gender). Trước đó chỉ có 4 field, hồ sơ nhân viên **không có đường nào vào cả**. `paysheetId` phải là bảng lương ACTIVE của tenant (port `validatePaySheetAssignment`).
+95. **Port `normalizeWorkplaceUpdateData`**: gửi `branchId` thì tự null `warehouseId` và ngược lại; gửi cả hai là 400. Thiếu nó thì một PATCH chỉ gửi một nửa sẽ để lại nơi làm việc cũ → dòng dữ liệu khai 2 nơi làm việc, và lần sửa **sau** mới báo lỗi, đổ tội cho người sửa sau.
+96. **Port validator CCCD** thành hàm thuần `validateVietnamIdentificationId` có unit test (`src/modules/users/vietnam-identification.ts`): 12 chữ số, mã tỉnh nằm trong danh sách 63 mã, và **thế kỷ/năm sinh + giới tính mã hoá trong số CCCD phải khớp `dob`/`gender` của hồ sơ**. Cả ba field đều có thể là field đang được sửa nên kiểm trên kết quả đã merge, đúng như bản cũ. Đây là rule đáng giá: CCCD, ngày sinh và giới tính đều chảy xuống bảng lương và export bảo hiểm xã hội, sai ở đó là chuyện của người khác.
+97. **Kiểm trùng email + CCCD** khi sửa (port `checkStaffUniqueness`). **Một điểm cố ý khác bản cũ**: bản cũ kiểm CCCD trùng **toàn hệ thống, không lọc tenant** — hợp lý cho một số định danh quốc gia, nhưng nghĩa là cửa hàng A dò được cửa hàng B có tuyển một người cụ thể hay không. Đã thu về phạm vi tenant.
+98. `SELECT_SAFE` mở rộng thêm các cột vừa cho sửa (profile\*, hireDate, paysheetId, accountNote) — nếu không thì PATCH xong response không hiện thứ vừa ghi.
+
+**Chưa sửa (review có nêu, chủ dự án chưa chọn)**: 1.2 (`findOne` không loại DELETED — nhưng bỏ `status` khỏi DTO ở mục 90 đã chặn đường hồi sinh tài khoản đã xoá, còn lại là sửa được roleId/posting của một dòng đã xoá), 2.1–2.4 và 2.7–2.8 (đổi default limit, thêm sort, filter `locationType` đơn lẻ, đổi shape response stock-movement), 3.x (các chỗ siết chặt hơn bản cũ), 4.x (bên nhận huỷ được phiếu; `approveAdjust` bắn cảnh báo tồn kho), 5.1 (revoke refresh token khi xoá/vô hiệu hoá — chờ Redis).
+
+**Còn thiếu ở nhánh tạo tài khoản**: validator số điện thoại VN của bản cũ (`validateStaffPhoneNumber` — chặn đầu số VoIP/vệ tinh/mạng dùng riêng, tổng đài khẩn cấp) chưa port; `CreateUserDto` vẫn chỉ có `@MinLength(8)`, tức là nhận `"abcdefgh"`. Nằm ở nhánh create nên để ngoài phạm vi lần sửa này.
+
+**Kiểm chứng**: `tsc` · `lint` · `build` · `check-permissions` sạch · unit **42/42** (thêm `vietnam-identification.spec.ts`) · di-check 2/2. **Vẫn chưa chạm database thật** — Docker vẫn không lên.
+
+### 2026-08-25, phần 4 — validator số điện thoại + **chạy thật trên Postgres lần đầu**
+
+99. **Port `validateStaffPhoneNumber`** thành hàm thuần `validateVietnamPhoneNumber` có unit test (21 case): đầu số nhà mạng hợp lệ, và chặn riêng từng dải trông giống di động nhưng không thể là — VoIP 065, vệ tinh 067, khối 069 của cơ quan nhà nước, 080, và tổng đài 111–115, **mỗi dải một message riêng** (báo "số điện thoại không hợp lệ" cho một số 113 đang hoạt động thì người nhập không hiểu sai ở đâu). Dải khẩn cấp kiểm **trước** luật 10 chữ số, nếu không thì message "phải đủ 10 chữ số" bắn trước và giải thích nhầm. Bỏ `@MinLength(8)` khỏi `CreateUserDto.phoneNumber` — nó nhận `"abcdefgh"`.
+
+**Docker đã lên. Đây là lần đầu code của 3 đợt port hôm nay chạm database thật.**
+
+100. **Thêm `test/smoke.e2e-spec.ts`** — 13 test, 46 assertion, chạy trên Postgres thật: đăng ký tenant → trial → chi nhánh/kho/NCC → sản phẩm 2 biến thể + tồn kho đầu kỳ → toàn bộ máy trạng thái chuyển kho. **Tự dọn sạch dữ liệu nó tạo ra** (đã verify DB không còn dòng thừa), nên chạy lại bao nhiêu lần cũng được — giữ đúng tính chất đó nếu viết thêm.
+101. **Hai chỗ tôi lo nhất đều chạy đúng**: (a) `isLowStock` dùng Prisma field reference (`stock <= minStock`) — lọc đúng 1 dòng tồn 8/ngưỡng 10; (b) `adjustStock` bản `upsert` **tạo được dòng tồn kho chưa tồn tại** khi nhận hàng nhập (kho 0 → 60).
+102. **Số học tồn kho đúng qua cả vòng đời**: xuất 20 (kho 50→30) → nhận thiếu 18/20 (chi nhánh 8→26) → huỷ phiếu đang IN_TRANSIT trả lại kho (25→30) → kiểm kê đếm 24 vs hệ thống 26 → duyệt (chi nhánh 26→24). Chặn xuất quá tồn (400), chặn ship từ DRAFT (409).
+103. **Hạn mức công nợ đúng cả 3 điểm kiểm**: tạo phiếu 15tr > hạn mức 10tr → 400; nhận 60 × 130k → công nợ đúng 7.800.000; giá nhập > giá bán lẻ → 400.
+104. **Cảnh báo 75% hạn mức**: lúc đầu test fail và **hoá ra tôi test sai, không phải code sai** — chủ cửa hàng tự nhận hàng thì người nhận thông báo duy nhất lại chính là người vừa bấm, bị lọc ra, nên không gửi gì. **Bản cũ hành xử y hệt** (`ownerIdsFiltered.length > 0`). Đã sửa test: cho nhân viên nhận hàng → chủ cửa hàng nhận đúng 1 thông báo; và phiếu nhận **thứ hai** trên ngưỡng vẫn chỉ 1 thông báo, đúng tính edge-trigger.
+105. **Phân quyền theo địa điểm chạy đúng**: nhân viên chi nhánh chỉ thấy phiếu của chi nhánh mình, tạo phiếu xuất từ kho khác → 403, gọi `/products` khi role không có `products:read` → 403.
+106. **Transaction tạo sản phẩm rollback sạch**: tạo sản phẩm có SKU trùng → 409 và **không để lại nửa sản phẩm** nào trong DB.
+107. Thêm override ESLint cho `test/**/*.e2e-spec.ts`: tắt nhóm `no-unsafe-*`. Body của response supertest là `any` theo bản chất và assert lên nó chính là việc của e2e test — ép kiểu từng dòng chỉ làm assertion khó đọc chứ không an toàn hơn. Code trong `src/` giữ nguyên đủ luật.
+
+**Kiểm chứng**: `tsc` · `lint` · `build` · `check-permissions` sạch · unit **63/63** · **e2e 17/17 trên Postgres thật** · DB không còn dữ liệu test.
+
+**Quan sát nhỏ, chưa xử lý**: chạy e2e có warning `pg` — *"Calling client.query() when the client is already executing a query is deprecated"*. Không làm fail test, nhiều khả năng đến từ các cặp `Promise.all([findMany, count])` dùng chung một connection qua driver adapter. Đáng xem lại khi nâng `pg` lên 9.
+
 ## Việc CHƯA làm — đừng quên
 
 - **Refresh token / logout** — vẫn cố ý hoãn, chờ bạn wire Redis (đã có `REDIS_URL` trong `.env` nhưng chưa dùng ở đâu trong code). OTP cũng đang lưu in-memory vì cùng lý do — khi wire Redis thì làm cả 2 luôn thể.
@@ -153,13 +261,16 @@ Không thêm module mới. Đây là đợt dọn: 5 lỗ hổng/thiếu sót th
 - **Response envelope `{success, message?, data?}`** — vẫn chưa làm ở bất kỳ module nào, kể cả các module đã port thật (auth/roles/users/audit-logs/plans/subscriptions/subscription-invoices/notifications/branches/warehouses/suppliers/brands/categories trả thẳng JSON của Nest/Prisma). **Global exception filter thì đã có rồi** (mục 42 ngày 20/8) — phần còn thiếu là interceptor bọc response, và nó đổi contract của mọi controller đã port nên phải làm một lượt. Càng để lâu càng nhiều chỗ phải sửa lại.
 - **FCM push** — Socket.IO thật rồi (xem phần 2 ngày 17/8), nhưng push (app đóng/không mở) vẫn chưa — `UserFcmToken` đã thu thập được qua `POST /notifications/device-token` nhưng chưa có gì gửi tới token đó.
 - **Notification/audit template mới chỉ có cho domain Subscription** — các domain khác (leave request, stock movement, ticket...) khi port thật phải tự thêm file `*.templates.ts`/`*.audit-template.ts` riêng theo đúng rule mới, không viết thẳng vào `NotificationService`/`AuditInterceptor`.
-- **Bước tiếp theo**: nhóm cấu hình nhân sự (PayrollSetting/Paysheet/ShiftTemplate/Holiday), rồi Staff. Nhóm org/reference data đã port xong ngày 19/8 (mục 31–39).
-- **e2e chưa chạy lại sau đợt review 20/8** — Docker Desktop không chạy trên máy lúc làm nên chỉ có `test/di-check.e2e-spec.ts` (không cần DB) được xác minh. Chạy `docker compose up -d && pnpm run test:e2e` trước khi commit đợt này.
-- **Còn nợ từ đợt 19/8**: hạn mức công nợ NCC (`creditLimit`) hiện chỉ lưu, chưa ai kiểm — logic kiểm nằm ở stock-movement lúc nhận hàng, chưa port. Tương tự `Product.categoryName` (bản copy denormalized) vẫn không được cập nhật khi đổi tên danh mục, đúng như bản cũ — xử lý khi port module products.
+- **Bước tiếp theo**: nhóm 5 — Bán hàng (Order/Promotion/CashDrawer), rồi nhóm 6 (Ticket/Stats/AI/system-notification/tenant/upload). **Nhóm 1 (cấu hình nhân sự) và nhóm 3 (chấm công/nghỉ phép) để sau cùng** theo thứ tự chủ dự án chốt 25/8. Đã xong: org/reference data 19/8 (mục 31–39), catalogue 25/8 (mục 58–73), Staff + StockMovement 25/8 phần 2 (mục 74–89).
+- **Order sẽ cần `InventoryService.adjustStock` / `lowStockCrossing` / `notifyLowStock`** — đã có sẵn và StockMovement đang dùng đúng khuôn đó (transaction client, thông báo sau commit). Đừng viết bản trừ kho riêng cho bán hàng.
+- ~~e2e chưa chạy~~ — **đã trả xong 25/8 phần 4**: e2e 17/17 trên Postgres thật, kèm smoke suite phủ 4 module port hôm nay. Nợ này mở từ 20/8 — Docker Desktop không chạy trên máy lúc làm nên chỉ có `test/di-check.e2e-spec.ts` (không cần DB) được xác minh. Chạy `docker compose up -d && pnpm run test:e2e` trước khi commit đợt này.
+- ~~Còn nợ từ đợt 19/8~~ — đã trả xong cả hai: `Product.categoryName` (mục 62) và hạn mức công nợ NCC (mục 84), đều ngày 25/8.
+- **`WorkingSchedule` sẽ phải nới `StockMovementService.canActAt()`** — quyền tạm theo lịch làm việc (`managedScheduleAccess`) của bản cũ chưa có chỗ nào thay thế, xem mục 86.
 
-## Trạng thái git (cập nhật 2026-08-20)
+## Trạng thái git (cập nhật 2026-08-25, phần 2)
 
-- `iKiot-BE`: remote `origin` = `https://github.com/iKiotMS/nestjs-ikiot.git`, nhánh `main`, **4 commit** ("first commit", "handoff work", "add audit/noti/subcription/role", "update decode token and clean dead code"). **Chưa commit: ~100 file** — phần 3/4/5 của ngày 17/8, toàn bộ đợt 19/8 (5 module org/reference data + migration), và toàn bộ đợt review 20/8 ở trên.
-- `iKiotMS-BE`: remote `origin` = `https://github.com/iKiotMS/iKiotMS-BE.git`. Chỉ có `CLAUDE.md` chưa commit, không có thay đổi code nào khác.
+- `iKiot-BE`: remote `origin` = `https://github.com/iKiotMS/nestjs-ikiot.git`, nhánh `main`, **6 commit** — mới nhất `4dbd691 adding AI coding rule`, trước đó `c976794 add branch warehouse`. Nghĩa là đợt 19/8 (org/reference data) và đợt review 20/8 (kèm mục `## Coding rules` trong CLAUDE.md) **đã được commit**.
+- **Chưa commit: 63 mục** — toàn bộ đợt 25/8: product + inventory (mục 58–73) và staff + stock movement (mục 74–89).
+- `iKiotMS-BE`: remote `origin` = `https://github.com/iKiotMS/iKiotMS-BE.git`. Chỉ có `CLAUDE.md` chưa commit, **không có thay đổi code nào** — đúng như quy ước một chiều.
 
 Đừng tin đoạn này nếu nó lệch với `git log`/`git status` thật — cập nhật lại đoạn này (hoặc thêm mục ngày mới) mỗi khi commit/push để nó không lạc hậu.

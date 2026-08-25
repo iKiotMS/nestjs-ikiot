@@ -177,14 +177,31 @@ export class CategoryService {
   }
 
   async update(tenantId: string, id: string, dto: UpdateCategoryDto) {
-    await this.findRow(tenantId, id);
+    const existing = await this.findRow(tenantId, id);
 
     if (dto.parentId) {
       await this.assertParentExists(tenantId, dto.parentId);
       await this.assertNoCycle(tenantId, id, dto.parentId);
     }
 
-    return this.prisma.category.update({ where: { id }, data: dto });
+    const renamed = dto.name !== undefined && dto.name !== existing.name;
+
+    return this.prisma.$transaction(async (tx) => {
+      const category = await tx.category.update({ where: { id }, data: dto });
+
+      // Product.categoryName is a denormalized copy kept for list screens, so it has to
+      // follow a rename. iKiotMS-BE never did this — renaming a category left every
+      // product still showing the old label, which is the debt CLAUDE.md flagged to settle
+      // when products got ported.
+      if (renamed) {
+        await tx.product.updateMany({
+          where: { tenantId, categoryId: id },
+          data: { categoryName: category.name },
+        });
+      }
+
+      return category;
+    });
   }
 
   async remove(tenantId: string, id: string) {

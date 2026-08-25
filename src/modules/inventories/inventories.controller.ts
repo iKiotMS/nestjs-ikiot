@@ -4,75 +4,68 @@ import {
   Delete,
   Get,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { InventoryService } from './inventories.service';
-import { CreateInventoryDto } from './dto/create-inventories.dto';
-import { UpdateInventoryDto } from './dto/update-inventories.dto';
+import { QueryInventoryDto } from './dto/query-inventory.dto';
+import { AddProductToLocationDto } from './dto/add-product-to-location.dto';
+import { UpdateMinStockDto } from './dto/update-min-stock.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
-import {
-  requireTenantId,
-  resolveTenantScope,
-} from '../../common/utils/tenant-scope';
+import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Generated CRUD, not a real port yet: gated by the global JwtAuthGuard, scoped to the
-// caller's tenant and permission-checked against the 'inventory' catalog resource — but
-// the service underneath is plain Prisma CRUD, not the real business logic.
-@ApiTags('inventories')
+/**
+ * Real port of iKiotMS-BE's InventoryController. Path stays `/inventory` (singular), as
+ * the old API and the catalog resource both spell it.
+ *
+ * Permissions differ from the old system in one place, deliberately: adding and removing a
+ * product at a location used to be gated on `role in (TENANT_OWNER, WAREHOUSE_MANAGER)`,
+ * and neither WAREHOUSE_MANAGER nor role-based gating exists any more. They are
+ * `inventory:create` / `inventory:delete` now, which the tenant grants to whichever role
+ * it wants — same substitution the branch/warehouse manager appointment made.
+ */
+@ApiTags('inventory')
 @ApiBearerAuth('bearer')
-@Controller('inventories')
+@Controller('inventory')
 export class InventoryController {
   constructor(private readonly service: InventoryService) {}
 
   @Permissions('inventory', 'read')
   @Get()
-  findAll(@CurrentUser() user: AuthUser, @Query('tenantId') tenantId?: string) {
-    return this.service.findAll(resolveTenantScope(user, tenantId));
+  findAll(@CurrentUser() user: AuthUser, @Query() query: QueryInventoryDto) {
+    return this.service.findAll(requireTenantId(user), query);
   }
 
-  @Permissions('inventory', 'read')
-  @Get(':id')
-  findOne(
+  @Permissions('inventory', 'update')
+  @Patch(':id/min-stock')
+  updateMinStock(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateMinStockDto,
   ) {
-    return this.service.findOne(resolveTenantScope(user, tenantId), id);
+    return this.service.updateMinStock(requireTenantId(user), id, dto.minStock);
   }
 
   @Permissions('inventory', 'create')
   @Post()
-  create(
+  addProductToLocation(
     @CurrentUser() user: AuthUser,
-    @Body() dto: CreateInventoryDto,
-    @Query('tenantId') tenantId?: string,
+    @Body() dto: AddProductToLocationDto,
   ) {
-    return this.service.create(requireTenantId(user, tenantId), dto);
-  }
-
-  @Permissions('inventory', 'update')
-  @Patch(':id')
-  update(
-    @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Body() dto: UpdateInventoryDto,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.update(resolveTenantScope(user, tenantId), id, dto);
+    return this.service.addProductToLocation(requireTenantId(user), dto);
   }
 
   @Permissions('inventory', 'delete')
   @Delete(':id')
-  remove(
+  removeProductFromLocation(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
+    @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.service.remove(resolveTenantScope(user, tenantId), id);
+    return this.service.removeProductFromLocation(requireTenantId(user), id);
   }
 }

@@ -40,4 +40,18 @@ export default tseslint.config(
       "prettier/prettier": ["error", { endOfLine: "auto" }],
     },
   },
+  {
+    // An HTTP response body is `any` by construction — supertest cannot know its shape,
+    // and asserting on it is the entire job of an e2e test. Typing every `res.body` read
+    // would bury the assertions in casts without making them any safer, so the unsafe-*
+    // family is off here and only here. Source code keeps all of it.
+    files: ['test/**/*.e2e-spec.ts'],
+    rules: {
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-argument': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
+      '@typescript-eslint/no-unsafe-return': 'off',
+    },
+  },
 );

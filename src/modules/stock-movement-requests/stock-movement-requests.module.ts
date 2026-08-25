@@ -1,10 +1,15 @@
 import { Module } from '@nestjs/common';
-import { StockMovementRequestController } from './stock-movement-requests.controller';
-import { StockMovementRequestService } from './stock-movement-requests.service';
+import { StockMovementController } from './stock-movement-requests.controller';
+import { StockMovementService } from './stock-movement-requests.service';
+import { InventoryModule } from '../inventories/inventories.module';
+import { NotificationModule } from '../notifications/notifications.module';
 
 @Module({
-  controllers: [StockMovementRequestController],
-  providers: [StockMovementRequestService],
-  exports: [StockMovementRequestService],
+  // InventoryModule for the stock primitives, NotificationModule for the fan-out to the
+  // locations involved.
+  imports: [InventoryModule, NotificationModule],
+  controllers: [StockMovementController],
+  providers: [StockMovementService],
+  exports: [StockMovementService],
 })
 export class StockMovementRequestModule {}

@@ -4,75 +4,151 @@ import {
   Delete,
   Get,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ProductService } from './products.service';
-import { CreateProductDto } from './dto/create-products.dto';
-import { UpdateProductDto } from './dto/update-products.dto';
+import { CreateProductDto } from './dto/create-product.dto';
+import { UpdateProductDto } from './dto/update-product.dto';
+import { CreateProductItemDto } from './dto/product-item.dto';
+import { UpdateProductItemDto } from './dto/update-product-item.dto';
+import { AddSupplierToItemDto } from './dto/add-supplier.dto';
+import {
+  QueryProductDto,
+  QueryProductItemDto,
+  SearchProductDto,
+} from './dto/query-product.dto';
+import { LocationRefQueryDto } from '../../common/dto/location-ref.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
-import {
-  requireTenantId,
-  resolveTenantScope,
-} from '../../common/utils/tenant-scope';
+import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Generated CRUD, not a real port yet: gated by the global JwtAuthGuard, scoped to the
-// caller's tenant and permission-checked against the 'products' catalog resource — but
-// the service underneath is plain Prisma CRUD, not the real business logic.
+/**
+ * Real port of iKiotMS-BE's ProductController.
+ *
+ * **Every route here is newly permission-gated.** The old module registered all eleven on
+ * bare `verifyJwt` with no `authorize()` call at all, so any logged-in account — including
+ * a CUSTOMER — could create, edit and discontinue the tenant's whole catalogue. The
+ * `products` catalog resource existed the entire time; it was simply never applied.
+ *
+ * Two paths changed shape, deliberately: the old `DELETE /products/:id/delete` and
+ * `DELETE /products/items/:itemId/delete` drop their `/delete` suffix, which nothing else
+ * in either codebase used.
+ */
 @ApiTags('products')
 @ApiBearerAuth('bearer')
 @Controller('products')
 export class ProductController {
   constructor(private readonly service: ProductService) {}
 
+  @Permissions('products', 'create')
+  @Post()
+  create(@CurrentUser() user: AuthUser, @Body() dto: CreateProductDto) {
+    return this.service.create(requireTenantId(user), dto);
+  }
+
   @Permissions('products', 'read')
   @Get()
-  findAll(@CurrentUser() user: AuthUser, @Query('tenantId') tenantId?: string) {
-    return this.service.findAll(resolveTenantScope(user, tenantId));
+  findAll(@CurrentUser() user: AuthUser, @Query() query: QueryProductDto) {
+    return this.service.findAll(requireTenantId(user), query);
+  }
+
+  // `items` and `search` must stay above `:id` — otherwise the router matches them as a
+  // product id and every call 404s. Same ordering trap the old Express module documented.
+  @Permissions('products', 'read')
+  @Get('items')
+  listItems(
+    @CurrentUser() user: AuthUser,
+    @Query() query: QueryProductItemDto,
+  ) {
+    return this.service.listItems(requireTenantId(user), query);
+  }
+
+  @Permissions('products', 'read')
+  @Get('search')
+  search(@CurrentUser() user: AuthUser, @Query() query: SearchProductDto) {
+    return this.service.search(requireTenantId(user), query);
   }
 
   @Permissions('products', 'read')
   @Get(':id')
   findOne(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() location: LocationRefQueryDto,
   ) {
-    return this.service.findOne(resolveTenantScope(user, tenantId), id);
-  }
-
-  @Permissions('products', 'create')
-  @Post()
-  create(
-    @CurrentUser() user: AuthUser,
-    @Body() dto: CreateProductDto,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.create(requireTenantId(user, tenantId), dto);
+    return this.service.findOne(requireTenantId(user), id, location);
   }
 
   @Permissions('products', 'update')
   @Patch(':id')
   update(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateProductDto,
-    @Query('tenantId') tenantId?: string,
   ) {
-    return this.service.update(resolveTenantScope(user, tenantId), id, dto);
+    return this.service.update(requireTenantId(user), id, dto);
+  }
+
+  /** Soft delete — sets status to DISCONTINUED. See ProductService.discontinue. */
+  @Permissions('products', 'delete')
+  @Delete(':id')
+  discontinue(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.service.discontinue(requireTenantId(user), id);
+  }
+
+  // ─── Variants ──────────────────────────────────────────────────────────────
+
+  // These are three segments deep (`/products/items/:itemId`), so they can't collide with
+  // the two-segment `/products/:id` above no matter what order they're declared in — only
+  // `GET items` and `GET search` needed hoisting.
+  @Permissions('products', 'update')
+  @Patch('items/:itemId')
+  updateItem(
+    @CurrentUser() user: AuthUser,
+    @Param('itemId', ParseUUIDPipe) itemId: string,
+    @Body() dto: UpdateProductItemDto,
+  ) {
+    return this.service.updateItem(requireTenantId(user), itemId, dto);
   }
 
   @Permissions('products', 'delete')
-  @Delete(':id')
-  remove(
+  @Delete('items/:itemId')
+  removeItem(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
+    @Param('itemId', ParseUUIDPipe) itemId: string,
   ) {
-    return this.service.remove(resolveTenantScope(user, tenantId), id);
+    return this.service.removeItem(requireTenantId(user), itemId);
+  }
+
+  @Permissions('products', 'update')
+  @Post('items/:itemId/suppliers')
+  addSupplierToItem(
+    @CurrentUser() user: AuthUser,
+    @Param('itemId', ParseUUIDPipe) itemId: string,
+    @Body() dto: AddSupplierToItemDto,
+  ) {
+    return this.service.addSupplierToItem(
+      requireTenantId(user),
+      itemId,
+      dto.supplierId,
+    );
+  }
+
+  @Permissions('products', 'create')
+  @Post(':productId/items')
+  createItem(
+    @CurrentUser() user: AuthUser,
+    @Param('productId', ParseUUIDPipe) productId: string,
+    @Body() dto: CreateProductItemDto,
+  ) {
+    return this.service.createItem(requireTenantId(user), productId, dto);
   }
 }

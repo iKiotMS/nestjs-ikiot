@@ -13,12 +13,12 @@ export interface NotifyInput extends NotificationContent {
 }
 
 // Ported from iKiotMS-BE's src/services/notificationService.js (fan-out) +
-// src/modules/notification (inbox API), merged into one module here. Only `notify()` and
-// `tenantOwners()` are ported from the fan-out side so far — enough for Subscription.
-// Port `managersOfLocation`/`approversOf`/`displayName` when the modules that need them
-// (leave requests, stock movement, tickets, ...) get their real business logic — and put
-// any new notification *copy* in a `templates/*.templates.ts` file, never inline here or
-// in the calling service (see CLAUDE.md "Notification & audit templates").
+// src/modules/notification (inbox API), merged into one module here. `notify()`,
+// `tenantOwners()` and `managersOfLocation()` are ported from the fan-out side so far.
+// Port `approversOf`/`displayName` when the modules that need them (leave requests,
+// tickets, ...) get their real business logic — and put any new notification *copy* in a
+// `templates/*.templates.ts` file, never inline here or in the calling service (see
+// CLAUDE.md "Notification & audit templates").
 @Injectable()
 export class NotificationService {
   private readonly logger = new Logger(NotificationService.name);
@@ -94,6 +94,53 @@ export class NotificationService {
     } catch (error) {
       this.logger.error(
         'tenantOwners lookup failed',
+        error instanceof Error ? error.stack : error,
+      );
+      return [];
+    }
+  }
+
+  /**
+   * Who to tell about something that happened at one branch or warehouse.
+   *
+   * iKiotMS-BE answered this by looking for users whose \`role\` was BRANCH_MANAGER or
+   * WAREHOUSE_MANAGER *and* who were posted there. Neither role exists any more (see
+   * CLAUDE.md "Authorization"), and the appointment now lives on the location itself —
+   * so this reads \`Branch.managerId\` / \`Warehouse.managerId\`.
+   *
+   * Falls back to the tenant's owners when the location has no manager appointed. The old
+   * version returned an empty list there, which meant a low-stock warning for an
+   * unmanaged branch was silently sent to nobody.
+   */
+  async managersOfLocation(args: {
+    tenantId: string;
+    branchId: string | null;
+    warehouseId: string | null;
+  }): Promise<string[]> {
+    try {
+      const location = args.branchId
+        ? await this.prisma.branch.findFirst({
+            where: { id: args.branchId, tenantId: args.tenantId },
+            select: { managerId: true },
+          })
+        : args.warehouseId
+          ? await this.prisma.warehouse.findFirst({
+              where: { id: args.warehouseId, tenantId: args.tenantId },
+              select: { managerId: true },
+            })
+          : null;
+
+      if (!location?.managerId) return this.tenantOwners(args.tenantId);
+
+      // An appointed manager who has since been suspended shouldn't be the only recipient.
+      const manager = await this.prisma.user.findFirst({
+        where: { id: location.managerId, status: UserStatus.ACTIVE },
+        select: { id: true },
+      });
+      return manager ? [manager.id] : this.tenantOwners(args.tenantId);
+    } catch (error) {
+      this.logger.error(
+        'managersOfLocation lookup failed',
         error instanceof Error ? error.stack : error,
       );
       return [];

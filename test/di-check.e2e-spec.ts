@@ -6,6 +6,10 @@ import { SubscriptionAuditTemplate } from './../src/modules/subscriptions/subscr
 import { SubscriptionBillingService } from './../src/modules/subscriptions/subscription-billing.service';
 import { BranchService } from './../src/modules/branches/branches.service';
 import { WarehouseService } from './../src/modules/warehouses/warehouses.service';
+import { ProductService } from './../src/modules/products/products.service';
+import { InventoryService } from './../src/modules/inventories/inventories.service';
+import { StockMovementService } from './../src/modules/stock-movement-requests/stock-movement-requests.service';
+import { UserService } from './../src/modules/users/users.service';
 
 // Compiles the whole DI graph without calling init(), so it needs no database. Catches the
 // wiring mistakes a type-check can't: a provider that isn't exported by its module, a
@@ -23,6 +27,12 @@ describe('AppModule DI graph', () => {
     ).toBeDefined();
     expect(moduleRef.get(BranchService, { strict: false })).toBeDefined();
     expect(moduleRef.get(WarehouseService, { strict: false })).toBeDefined();
+    expect(moduleRef.get(ProductService, { strict: false })).toBeDefined();
+    expect(moduleRef.get(InventoryService, { strict: false })).toBeDefined();
+    expect(
+      moduleRef.get(StockMovementService, { strict: false }),
+    ).toBeDefined();
+    expect(moduleRef.get(UserService, { strict: false })).toBeDefined();
   });
 
   // The whole point of @AuditTemplate(): a domain module registers its own descriptor and
