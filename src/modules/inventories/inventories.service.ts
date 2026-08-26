@@ -252,6 +252,64 @@ export class InventoryService {
   }
 
   /**
+   * Take stock off a shelf, refusing to go below zero.
+   *
+   * The guard is **inside the write**, not a check before it. Reading the level and then
+   * decrementing leaves a window where two tills both see enough stock, both sell, and the
+   * shelf ends up negative — iKiotMS-BE had exactly that shape and so did the first pass of
+   * this port. `updateMany` with `stock: { gte }` either matches and decrements atomically
+   * or matches nothing, and matching nothing is the answer to "was there enough?".
+   *
+   * A location that has never stocked the item matches no row, which is the same answer as
+   * a row holding zero — correct either way.
+   *
+   * Returns the row after the change so the caller can hand it to `lowStockCrossing`. Use
+   * this rather than `adjustStock` with a negative delta whenever the stock is leaving for
+   * real: a sale, a shipment. `adjustStock` stays for the movements that *add* stock and
+   * for corrections that are allowed to be blind (a stocktake, which has already checked).
+   */
+  async deductStock(
+    tx: Prisma.TransactionClient,
+    args: {
+      tenantId: string;
+      productItemId: string;
+      branchId: string | null;
+      warehouseId: string | null;
+      quantity: number;
+      /** Shown in the error — an id tells the cashier nothing. */
+      label: string;
+    },
+  ): Promise<Inventory> {
+    if (args.quantity <= 0) {
+      throw new BadRequestException('Số lượng xuất phải lớn hơn 0');
+    }
+
+    const where = {
+      tenantId: args.tenantId,
+      productItemId: args.productItemId,
+      branchId: args.branchId,
+      warehouseId: args.warehouseId,
+    };
+
+    const taken = await tx.inventory.updateMany({
+      where: { ...where, stock: { gte: args.quantity } },
+      data: { stock: { decrement: args.quantity } },
+    });
+
+    if (taken.count === 0) {
+      const current = await tx.inventory.findFirst({
+        where,
+        select: { stock: true },
+      });
+      throw new BadRequestException(
+        `Không đủ tồn kho cho ${args.label}: cần ${args.quantity}, còn ${current?.stock ?? 0}`,
+      );
+    }
+
+    return tx.inventory.findFirstOrThrow({ where });
+  }
+
+  /**
    * Did this change just push a line *through* its threshold? See `crossedLowStock` — the
    * rule itself lives in `low-stock.ts` so it can be tested without a database.
    */

@@ -502,6 +502,10 @@ model Customer {
   orders        Order[]
   promotionLogs PromotionLog[]
 
+  // Nullable, so Postgres only constrains rows that actually carry a code — which is
+  // exactly the rule: any number of customers with no code, never two sharing one. Also
+  // what lets the walk-in customer be resolved with an upsert instead of find-then-create.
+  @@unique([tenantId, customerCode])
   @@map("customers")
 }
 
@@ -1269,7 +1273,12 @@ model CashDrawerSession {
   shiftLogs CashDrawerShiftLog[]
 
   @@unique([tenantId, branchId, businessDate])
-  @@unique([tenantId, branchId, status]) // partial: WHERE status = 'OPEN' — add via follow-up migration edit
+  // "One OPEN drawer per branch" is a PARTIAL unique index and lives in SQL only —
+  // 20260826060000_cash_drawer_single_open_session. It cannot be written here: Prisma's
+  // DSL has no WHERE clause, and the plain @@unique it used to carry applied to CLOSED
+  // rows too, which capped a branch at one closed session for all time.
+  // A future `prisma migrate dev` will not know about it and will propose dropping it —
+  // edit the generated migration rather than letting that through.
   @@map("cash_drawer_sessions")
 }
 

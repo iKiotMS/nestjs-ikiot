@@ -3,76 +3,115 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { PromotionService } from './promotions.service';
-import { CreatePromotionDto } from './dto/create-promotions.dto';
-import { UpdatePromotionDto } from './dto/update-promotions.dto';
+import {
+  CreatePromotionDto,
+  PriceCartDto,
+  QueryPromotionDto,
+  UpdatePromotionDto,
+} from './dto/promotion.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
-import {
-  requireTenantId,
-  resolveTenantScope,
-} from '../../common/utils/tenant-scope';
+import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Generated CRUD, not a real port yet: gated by the global JwtAuthGuard, scoped to the
-// caller's tenant and permission-checked against the 'promotions' catalog resource — but
-// the service underneath is plain Prisma CRUD, not the real business logic.
+/**
+ * Real port of iKiotMS-BE's PromotionController — same nine routes and same permissions.
+ *
+ * `/candidates`, `/calculate` and `/apply` are POSTs because they carry a cart, not
+ * because they all write: only `/apply` does. The first two are previews and say so.
+ */
 @ApiTags('promotions')
 @ApiBearerAuth('bearer')
 @Controller('promotions')
 export class PromotionController {
   constructor(private readonly service: PromotionService) {}
 
+  @Permissions('promotions', 'create')
+  @Post()
+  create(@CurrentUser() user: AuthUser, @Body() dto: CreatePromotionDto) {
+    return this.service.create(requireTenantId(user), dto);
+  }
+
   @Permissions('promotions', 'read')
   @Get()
-  findAll(@CurrentUser() user: AuthUser, @Query('tenantId') tenantId?: string) {
-    return this.service.findAll(resolveTenantScope(user, tenantId));
+  findAll(@CurrentUser() user: AuthUser, @Query() query: QueryPromotionDto) {
+    return this.service.findAll(user, requireTenantId(user), query);
+  }
+
+  // The three cart endpoints are declared above `:id` — they are POST and `:id` is not,
+  // so they cannot actually collide, but keeping them together reads better.
+
+  /** Browse: every candidate for this cart, eligible or not, with the reason. */
+  @Permissions('promotions', 'calculate')
+  @HttpCode(HttpStatus.OK)
+  @Post('candidates')
+  candidates(@CurrentUser() user: AuthUser, @Body() dto: PriceCartDto) {
+    return this.service.listCandidates(requireTenantId(user), dto);
+  }
+
+  /** Preview only — nothing is written. */
+  @Permissions('promotions', 'calculate')
+  @HttpCode(HttpStatus.OK)
+  @Post('calculate')
+  calculate(@CurrentUser() user: AuthUser, @Body() dto: PriceCartDto) {
+    return this.service.calculate(requireTenantId(user), dto);
+  }
+
+  /** Commits the discount against an order: usage counts move, logs are written. */
+  @Permissions('promotions', 'apply')
+  @HttpCode(HttpStatus.OK)
+  @Post('apply')
+  apply(@CurrentUser() user: AuthUser, @Body() dto: PriceCartDto) {
+    return this.service.apply(requireTenantId(user), user.userId, dto);
   }
 
   @Permissions('promotions', 'read')
   @Get(':id')
   findOne(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
+    @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.service.findOne(resolveTenantScope(user, tenantId), id);
+    return this.service.findOne(user, requireTenantId(user), id);
   }
 
-  @Permissions('promotions', 'create')
-  @Post()
-  create(
+  /** Where this promotion has actually been used, and for how much. */
+  @Permissions('promotions', 'read')
+  @Get(':id/logs')
+  findLogs(
     @CurrentUser() user: AuthUser,
-    @Body() dto: CreatePromotionDto,
-    @Query('tenantId') tenantId?: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() query: QueryPromotionDto,
   ) {
-    return this.service.create(requireTenantId(user, tenantId), dto);
+    return this.service.findLogs(user, requireTenantId(user), id, query);
   }
 
   @Permissions('promotions', 'update')
   @Patch(':id')
   update(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdatePromotionDto,
-    @Query('tenantId') tenantId?: string,
   ) {
-    return this.service.update(resolveTenantScope(user, tenantId), id, dto);
+    return this.service.update(user, requireTenantId(user), id, dto);
   }
 
+  /** Soft delete — sets status to INACTIVE. See PromotionService.deactivate. */
   @Permissions('promotions', 'delete')
   @Delete(':id')
-  remove(
+  deactivate(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
+    @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.service.remove(resolveTenantScope(user, tenantId), id);
+    return this.service.deactivate(user, requireTenantId(user), id);
   }
 }

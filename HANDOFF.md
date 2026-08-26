@@ -254,6 +254,101 @@ Chủ dự án chốt rút gọn thứ tự build: làm trước nhóm **2 (Staf
 
 **Quan sát nhỏ, chưa xử lý**: chạy e2e có warning `pg` — *"Calling client.query() when the client is already executing a query is deprecated"*. Không làm fail test, nhiều khả năng đến từ các cặp `Promise.all([findMany, count])` dùng chung một connection qua driver adapter. Đáng xem lại khi nâng `pg` lên 9.
 
+### 2026-08-26 — port thật Order + Promotion (+ Customer)
+
+Nhóm 5. Ba module đi cùng nhau: giỏ hàng được `promotions` tính giá, `orders` chốt đơn, gắn vào một dòng `customers`.
+
+**Route** (12 + 9 + 6)
+
+108. `orders`: `POST`, `GET`, `GET /:id`, `PATCH /:id/status`, `POST /:id/pay-offline`, và `POST /webhook/sepay/order` (public). **Không có DELETE** — đơn sai thì CANCELLED hoặc RETURNED, cả hai đều để lại dấu vết.
+109. `promotions`: CRUD + `GET /:id/logs` + 3 endpoint giỏ hàng `POST /promotions/{candidates,calculate,apply}`. Chỉ `/apply` ghi dữ liệu.
+110. `customers`: CRUD + `DELETE /customers` hàng loạt. Xoá mềm (`isDeleted`) vì đơn hàng trỏ FK vào.
+111. **Xoá module `promotion-logs` sinh tự động** — cùng lý do đã xoá `product-items`: nó mở `/promotion-logs` CRUD, tức là một đường ghi log sử dụng khuyến mãi **không đi qua** `/promotions/apply` và các hạn mức ở đó.
+
+**Lỗ hổng đã vá**
+
+112. **Tổng tiền đơn hàng giờ do server tính, không nhận từ client.** Bản cũ lấy `grandTotal` thẳng từ body rồi lưu — một request tự chế là quét cả giỏ hàng với giá 0. Đây chính là khoản nợ CLAUDE.md ghi từ lúc dựng CRUD sinh tự động, giờ trả xong. `grandTotalOf` = tổng dòng − giảm giá từng dòng − giảm giá `ORDER` thủ công. Giảm giá kiểu `PROMOTION` **không trừ lần nữa**: engine đã rải nó vào từng dòng rồi, `discountValue` chỉ là con số ghi lại. `status`/`change`/`paymentReference` cũng do server quyết.
+113. **6 route customer của bản cũ chạy `verifyJwt` trần, không `authorize()`** — ai đăng nhập cũng đọc và xoá được toàn bộ danh sách khách hàng. Resource `customers` đã thêm vào catalog từ đợt RBAC đúng để vá chỗ này, giờ mới gắn thật.
+114. `customerPay < grandTotal` giờ bị chặn ở cả tạo đơn lẫn `pay-offline` — chênh lệch giữa "tiền thối" và một khoản hụt âm thầm vào doanh thu.
+
+**Pricing engine**
+
+115. **`pricing-engine.ts` không chạm database** — port đúng cấu trúc bản cũ (`PricingEngine.js` vốn đã thuần), thành hàm thuần có **26 unit test**. Mọi luật về tiền nằm ở đó; service lo phần tra cứu: khuyến mãi ứng viên, category của từng dòng giỏ (biến thể không mang category, sản phẩm cha mới mang), và số lần khách đã dùng.
+116. **Áp khuyến mãi luôn là tường minh** — caller truyền đúng id người dùng bấm; engine không bao giờ tự đoán tổ hợp "tốt nhất", và một khuyến mãi được chọn nhưng không đủ điều kiện là **400 chứ không im lặng bỏ qua** (bỏ qua nghĩa là thu của khách nhiều hơn số hiện trên màn hình).
+117. **Tối đa 2 khuyến mãi, và phải cùng stackable**; discount **tích luỹ** trên mỗi dòng bị kẹp lại bằng giá dòng đó. Thiếu cái kẹp này thì 2 khuyến mãi cùng trúng một SKU sẽ giảm quá giá và đơn hàng thành nợ tiền khách. Có test riêng cho đúng tình huống đó.
+118. **Hạn mức lượt dùng kiểm lại BÊN TRONG transaction** ở `/apply`: hạn mức tổng bằng `updateMany` có điều kiện (chỉ tăng khi còn chỗ), hạn mức theo khách bằng đếm lại log, và `@@unique([orderId, promotionId])` làm chốt chặn cuối. Số đọc trước đó có thể đã cũ — hai quầy, hoặc một khách mở hai tab.
+
+**Dòng tiền & SePay**
+
+119. **Bán tiền mặt có thối là 2 dòng cash flow**, không phải 1: ngăn kéo thật sự nhận cả tờ tiền và thật sự thối lại, kiểm quỹ cuối ca phải khớp cả hai. **Chỉ dòng INCOME mang `orderId`** — `@@unique([orderId, flowType])` phải để trống chỗ cho dòng EXPENSE mà lần RETURN sau này ghi. Bản cũ cũng để dòng thối không gắn orderId; nhìn như sơ suất nhưng không phải.
+120. **`SepayOrderService` tách hẳn khỏi `SepaySubscriptionService`** đúng như CLAUDE.md cảnh báo từ đợt subscription: bên kia trả vào tài khoản của iKiot lấy từ env, bên này trả vào tài khoản **của từng tenant** lấy từ cột `banking.*`, và **khoá webhook chính là cách nhận diện tenant**. Gộp lại nghĩa là credential của tích hợp này thanh toán được hoá đơn của tích hợp kia.
+121. Webhook trả 200 cho mọi trường hợp để SePay không retry, và **log cảnh báo** khi tiền về cho đơn đã thanh toán bằng cách khác — chỗ đó cần hoàn tiền thủ công.
+
+**Hai thay thế do RBAC**
+
+122. Phạm vi xem khuyến mãi: bản cũ rẽ theo BRANCH_MANAGER/STAFF; giờ là "TENANT_OWNER thấy hết, STAFF thấy khuyến mãi toàn hệ thống + khuyến mãi của chi nhánh mình". Luật "branch manager chỉ được tạo khuyến mãi cho chi nhánh mình" bỏ theo role — tạo được hay không là chuyện ai giữ `promotions:create`.
+123. Thông báo đơn đã thanh toán: bản cũ emit vào room `order:<id>` mà client tự join. Cơ chế đó **đã bị gỡ như một bản vá bảo mật** (xem CLAUDE.md "Realtime"), nên giờ emit vào `tenant:<id>` kèm orderId trong payload để client tự lọc.
+
+**Kiểm chứng — chạy thật trên Postgres**: `tsc` · `lint` · `build` · `check-permissions` sạch · unit **89/89** (thêm 26 test pricing engine) · **e2e 26/26**, smoke suite mở rộng thêm 9 kịch bản: tính tổng server-side, chặn bán quá tồn, RETURN trả lại kho + ghi dòng hoàn tiền, SEPAY mở PENDING → `pay-offline` → chặn thu hai lần, webhook (khoá sai / trích ref từ text tự do / chặn replay), tính giá có cap, `/apply` tăng `usedCount` + ghi log, chặn dùng quá hạn mức, phạm vi chi nhánh, khách vãng lai tự tạo, xoá mềm khách hàng. DB sạch sau khi chạy.
+
+### 2026-08-26, phần 2 — review đối chiếu bản cũ rồi sửa
+
+Review nêu 3 lỗi thật, 6 chỗ siết chặt chưa ghi, 7 đổi response, 3 yếu điểm kế thừa. Chủ dự án chốt: **sửa lỗi, giữ nguyên phần đổi response (không ảnh hưởng logic/nghiệp vụ), và làm cho đúng phần yếu điểm.**
+
+**Lỗi**
+
+124. **`@Permissions` giờ nhận nhiều action với nghĩa "hoặc"** — `@Permissions('orders', 'update', 'pay_offline')`. Bản cũ là `authorize("orders", ["update","pay_offline"])` và middleware giải bằng `actions.some(...)`, tức là **có một trong hai là đủ**; tôi port thành mỗi `pay_offline` nên một role đang có `orders:update` sẽ mất quyền sau khi lên bản mới. Đã sửa cả decorator, guard, và regex trong `scripts/check-permissions.js` (mọi action liệt kê vẫn phải có trong catalog).
+125. **Tách `can(user, resource, action)`** ra `common/utils/permission.ts` — đúng luật guard đang dùng, để service hỏi được. Cần vì có quyết định guard không làm được: vào được `GET /orders` là `orders:read`, nhưng **thấy bao nhiêu** mới là `orders:view_all`. Guard giờ gọi chung hàm này, không tự lặp lại phần short-circuit ADMIN/TENANT_OWNER nữa.
+126. **`appliedPromotions[].promotionId` giờ kiểm tenant.** `OrderAppliedPromotion.promotionId` là FK thật, nên id khuyến mãi của tenant khác vẫn qua được FK và **liên kết dữ liệu hai tenant với nhau**. Ở Mongo nó chỉ là ref treo nên không ai để ý.
+127. Bỏ mảng `crossings` chết trong `updateStatus` — khai rồi không bao giờ push, gọi `notifyLowStock([])`. Thay bằng comment nói rõ **vì sao** không cần: huỷ/hoàn chỉ làm kho tăng, mà tăng thì không thể tụt qua ngưỡng.
+
+**Yếu điểm kế thừa — làm cho đúng**
+
+128. **`InventoryService.deductStock`** — trừ kho có chốt `stock: { gte: quantity }` **ngay trong lệnh UPDATE**. Trước đó (và ở bản cũ) là đọc mức tồn rồi trừ sau: hai quầy cùng thấy còn 1 món, cùng bán, kho xuống âm. Giờ `updateMany` hoặc khớp và trừ nguyên tử, hoặc không khớp — và "không khớp" chính là câu trả lời cho "có đủ hàng không". **Áp cho cả bán hàng lẫn `ship` phiếu chuyển kho** — cùng một luật, một chỗ. Các lệnh `assertSourceStock`/`assertStockCovers` còn lại giờ chỉ là báo sớm cho người dùng, không phải chỗ chặn.
+129. **Khách vãng lai: `upsert` trong transaction.** Hai vấn đề cùng lúc — (a) tạo trước khi validate xong nên đơn lỗi vẫn để lại dòng khách, (b) find-then-create nên hai đơn vô danh đồng thời tạo **hai** dòng khách vãng lai. Giờ giải trong transaction bằng `upsert`, dựa trên index mới.
+130. **Migration `20260826050000_customer_code_unique_per_tenant`** — `@@unique([tenantId, customerCode])`. Viết tay vì `prisma migrate dev` cần terminal tương tác (môi trường này không có), rồi `prisma migrate deploy`. Cột nullable nên Postgres chỉ ràng buộc dòng **thực sự có mã** — đúng luật cần: bao nhiêu khách không mã cũng được, không bao giờ hai khách chung một mã. Đây cũng là index cho phép `upsert` ở mục 129, và nó biến việc kiểm trùng `customerCode` ở tầng app thành có bảo chứng dưới DB.
+131. **`GET /orders` và `GET /orders/:id` giờ giới hạn theo chi nhánh** — nhân viên thấy đơn của chi nhánh mình, `orders:view_all` mở ra toàn tenant (chủ/admin luôn qua). Bản cũ **không giới hạn gì**: thu ngân chi nhánh A đọc được toàn bộ doanh thu chi nhánh B. `orders:view_all` nằm trong catalog từ đầu mà không ai dùng — đọc đúng như luật định làm mà chưa nối. Giờ khớp với `stock-movements`, hai màn hình cạnh nhau mà hành xử khác nhau thì tự nó là một bug report.
+
+**Giữ nguyên theo yêu cầu**: phần đổi response (mất field `name` của nhân viên, `GET /customers` giới hạn 10 đơn/khách, limit mặc định 20→10, `qrUrl: null` thay vì bỏ field, status 400→409, `productName` lấy từ DB) — đều không đổi logic hay nghiệp vụ. 6 chỗ siết chặt hơn bản cũ cũng giữ, giờ đã ghi vào CLAUDE.md.
+
+**Kiểm chứng**: `tsc` · `lint` · `build` · `check-permissions` sạch · unit **89/89** · **e2e 30/30 trên Postgres thật**. Smoke thêm 4 kịch bản đúng vào các fix: đơn mang khuyến mãi của tenant khác → 404; nhân viên `GET /orders` chỉ thấy chi nhánh mình còn chủ thấy hết; bán vượt tồn 1 đơn vị → 400 **và tồn kho không suy suyển** (chốt nằm trong UPDATE); **3 đơn vô danh chạy song song → đúng 1 dòng khách vãng lai**.
+
+### 2026-08-26, phần 3 — port thật Cash Drawer (nốt nhóm 5)
+
+**Một lỗi schema phải sửa trước khi port**
+
+132. **Index `(tenant_id, branch_id, status)` là unique ĐẦY ĐỦ, không phải partial.** Schema đã ghi chú "partial: WHERE status = 'OPEN' — add via follow-up migration edit" nhưng migration init tạo ra bản đầy đủ. Nghĩa là mỗi chi nhánh chỉ **đóng ca được đúng một lần trong đời** — ngày thứ hai gọi `finalize` sẽ nổ unique violation. Đây là loại lỗi chỉ lộ ra ở ngày thứ hai chạy thật.
+    Migration `20260826060000_cash_drawer_single_open_session`: DROP index cũ, CREATE unique **partial** `WHERE status = 'OPEN'`. Đã gỡ `@@unique` khỏi `schema.prisma` vì Prisma không diễn đạt được WHERE — kèm cảnh báo trong schema: lần `prisma migrate dev` sau sẽ đề nghị xoá index này, **phải sửa migration sinh ra chứ đừng cho chạy thẳng**.
+
+**Module** (6 route, đúng path và đúng quyền bản cũ)
+
+133. `POST /cash-drawer-sessions` (open), `GET /current`, `GET`, `GET /:id`, `POST /:id/shift-logs`, `POST /:id/finalize`. **Không có PATCH/DELETE** — ca quầy là chứng từ tiền bạc, chỉ mở/ghi/chốt chứ không sửa. Ba route đọc dùng `@Permissions('cash_drawers', 'read', 'read_own')` — đúng dạng "hoặc" của `authorize(["read","read_own"])` bản cũ, nhờ mục 124 hôm nay.
+134. **`businessDate()` tách thành hàm thuần có 6 unit test.** Ngày kinh doanh là ngày **theo giờ cửa hàng** (`Asia/Ho_Chi_Minh`), không phải UTC — trả về nửa đêm UTC của ngày đó để cột `date` của Postgres không trôi. Tính theo UTC thì mọi ca mở trước 07:00 giờ VN bị tính sang doanh thu hôm trước; sai kiểu này không ai thấy cho tới lúc kiểm quỹ lệch hẳn một ca.
+135. **Trình tự phiếu ca được kiểm chứ không tin.** `START` chỉ hợp lệ khi là phiếu đầu tiên, hoặc ngay sau một `END` có ghi tên chính người này nhận bàn giao. `END` chỉ hợp lệ từ đúng người đã ghi `START` tương ứng. Và **chỉ người đang giữ quầy mới ghi được**. Không có mấy luật đó thì hai thu ngân cùng khai đã giữ quầy trong một khoảng, và khi thiếu tiền thì không quy được cho ca nào.
+136. `END` có `nextStaffId` = bàn giao: quầy sang tay người đó, ca vẫn mở. `END` không ghi tên ai = ca cuối ngày, và đó là điều kiện để `finalize`. Mọi lệnh ghi đều chốt trên `updatedAt` vừa đọc — một phiếu chen ngang sẽ làm phần kiểm trình tự phía trên thành cũ, và mất một lần bàn giao nghĩa là cái quầy không ai đứng tên.
+137. **Phân quyền thay thế** như mọi chỗ dính role cũ: chi nhánh lấy từ nơi nhân viên trực thuộc (chủ cửa hàng không trực thuộc đâu nên phải khai, và không được âm thầm đổi hướng sang chi nhánh khác), còn `cash_drawers:read` vs `read_own` quyết định thấy cả chi nhánh hay chỉ những ca mình làm. Hai cặp quyền này nằm trong catalog từ đợt RBAC mà chưa ai dùng — đây đúng là chỗ chúng sinh ra để dùng.
+
+**Kiểm chứng**: `tsc` · `lint` · `build` · `check-permissions` · `migrate status` sạch · unit **95/95** · **e2e 33/33 trên Postgres thật**.
+
+Smoke thêm 3 kịch bản chạy trọn một ngày quầy: mở ca → mở ca thứ hai cùng chi nhánh **409** → thu ngân chưa từng giữ quầy không thấy nổi ca (**404**) → `END` trước `START` **409** → `START` hai lần **409** → chốt giữa ca **409** → **bàn giao** sang thu ngân 2 (ca vẫn OPEN, người cũ hết quyền ghi → 403) → thu ngân 2 làm và kết ca → `finalize` (CLOSED, 4 phiếu ca) → `finalize` lần hai **409** → **mở được ca mới sau khi ca cũ đóng** (đúng thứ trước mục 132 làm không được) → `read_own` chỉ thấy ca mình làm, chủ thấy cả hai.
+
+**Một test của tôi sai chứ không phải code**: ban đầu tôi mở ca thứ hai và vẫn giao cho thu ngân 1, rồi lại assert họ chỉ thấy 1 ca — họ thấy 2 là đúng. Đã sửa test cho giao ca mới sang thu ngân 2.
+
+### 2026-08-26, phần 4 — review Cash Drawer rồi sửa
+
+Review nêu 3 lỗi thật, 2 chỗ nới lỏng, 4 đổi response, 1 điểm nhỏ. Chủ dự án chốt: **sửa những lỗi.**
+
+138. **Chốt chống ghi đè của phiếu ca không còn tác dụng khi không bàn giao.** Tôi giữ đúng chốt `updatedAt` của bản cũ nhưng viết `data: dto.nextStaffId ? { currentStaffId } : {}`. **Đo bằng probe chạy thật trên Postgres**: `updateMany` với `data: {}` khớp 1 dòng nhưng **không** bump `@updatedAt` (`matched=1 updatedAtChanged=false`). Nên với `START`, hoặc `END` không bàn giao, chốt không bao giờ tiến — hai request giống hệt (bấm hai lần, client tự retry) đều lọt và ghi **2 phiếu ca trùng**, đúng thứ mà cả module này sinh ra để chặn.
+    Bản cũ không dính vì phiếu ca là mảng nhúng: `$push` luôn làm `updatedAt` đổi. Tách sang bảng riêng là đúng cho Postgres nhưng lấy mất tác dụng phụ mà chốt đang dựa vào. Giờ ghi `currentStaffId` **không điều kiện** (giá trị không đổi trừ khi bàn giao), kèm comment giải thích vì sao `data` không được rỗng.
+139. **Nhân viên không được phân chi nhánh nhìn thấy quầy của mọi chi nhánh.** `findRow`/`findAll` chỉ lọc chi nhánh khi `user.branchId` có giá trị; một STAFF được cấp `cash_drawers:read` mà chưa phân chi nhánh thì rơi vào "không lọc gì". Bản cũ ném 403 `"User has no branch assigned"`. Đáng nói: **sáng cùng ngày tôi đã xử đúng chỗ này ở `orders.branchScope`** rồi lại để hở ở đây — hai module viết cùng ngày, cùng một luật, lệch nhau.
+    Giờ **mọi đường đều đi qua `resolveBranch`**, kể cả đường đọc: có chi nhánh → đúng chi nhánh đó; TENANT_OWNER/ADMIN → chi nhánh họ khai hoặc tất cả; còn lại không có chi nhánh → 403.
+140. `resolveBranch` trả `null` cho "mọi chi nhánh" thay vì chuỗi rỗng — `''` vẫn là `string` và sớm muộn lọt vào một `where` như một branchId thật.
+141. `shiftLogs` sắp theo `[{loggedAt: asc}, {id: asc}]`. `id` chỉ là tie-break cho **ổn định**, không phải khẳng định thứ tự chèn — hai phiếu cách nhau một micro giây trước đó trả về thứ tự tuỳ mỗi lần đọc, mà `shiftLogs.at(-1)` là nền của toàn bộ máy trạng thái START/END/finalize. Cái thật sự chặn trùng là mục 138.
+
+**Không sửa** (review có nêu, không phải lỗi): `GET /current` lỏng hơn bản cũ (bản cũ chỉ trả ca mình **đang giữ**; giờ ai từng ghi phiếu ca đó cũng xem được — cùng dữ liệu họ đã đọc được qua `GET /:id`, nên không phải rò rỉ); `fromDate`/`toDate` dùng `@IsDateString()` nên nhận cả ISO datetime đầy đủ chứ không chỉ `YYYY-MM-DD`; và 4 điểm đổi response (`businessDate` giờ là ISO datetime — **chỗ frontend dễ vấp nhất**, `shiftLogCount`, limit 20→10, 404→409).
+
+**Kiểm chứng**: `tsc` · `lint` · `build` · `check-permissions` · `migrate status` sạch · unit **95/95** · **e2e 35/35 trên Postgres thật**. Smoke thêm 2 kịch bản đúng vào hai lỗi: **hai phiếu START giống hệt gửi song song → 200 + 409, đúng 1 phiếu được ghi**; và nhân viên bị gỡ chi nhánh nhưng vẫn có `cash_drawers:read` → **403** cả khi liệt kê lẫn khi đọc theo id.
+
 ## Việc CHƯA làm — đừng quên
 
 - **Refresh token / logout** — vẫn cố ý hoãn, chờ bạn wire Redis (đã có `REDIS_URL` trong `.env` nhưng chưa dùng ở đâu trong code). OTP cũng đang lưu in-memory vì cùng lý do — khi wire Redis thì làm cả 2 luôn thể.
@@ -261,16 +356,17 @@ Chủ dự án chốt rút gọn thứ tự build: làm trước nhóm **2 (Staf
 - **Response envelope `{success, message?, data?}`** — vẫn chưa làm ở bất kỳ module nào, kể cả các module đã port thật (auth/roles/users/audit-logs/plans/subscriptions/subscription-invoices/notifications/branches/warehouses/suppliers/brands/categories trả thẳng JSON của Nest/Prisma). **Global exception filter thì đã có rồi** (mục 42 ngày 20/8) — phần còn thiếu là interceptor bọc response, và nó đổi contract của mọi controller đã port nên phải làm một lượt. Càng để lâu càng nhiều chỗ phải sửa lại.
 - **FCM push** — Socket.IO thật rồi (xem phần 2 ngày 17/8), nhưng push (app đóng/không mở) vẫn chưa — `UserFcmToken` đã thu thập được qua `POST /notifications/device-token` nhưng chưa có gì gửi tới token đó.
 - **Notification/audit template mới chỉ có cho domain Subscription** — các domain khác (leave request, stock movement, ticket...) khi port thật phải tự thêm file `*.templates.ts`/`*.audit-template.ts` riêng theo đúng rule mới, không viết thẳng vào `NotificationService`/`AuditInterceptor`.
-- **Bước tiếp theo**: nhóm 5 — Bán hàng (Order/Promotion/CashDrawer), rồi nhóm 6 (Ticket/Stats/AI/system-notification/tenant/upload). **Nhóm 1 (cấu hình nhân sự) và nhóm 3 (chấm công/nghỉ phép) để sau cùng** theo thứ tự chủ dự án chốt 25/8. Đã xong: org/reference data 19/8 (mục 31–39), catalogue 25/8 (mục 58–73), Staff + StockMovement 25/8 phần 2 (mục 74–89).
-- **Order sẽ cần `InventoryService.adjustStock` / `lowStockCrossing` / `notifyLowStock`** — đã có sẵn và StockMovement đang dùng đúng khuôn đó (transaction client, thông báo sau commit). Đừng viết bản trừ kho riêng cho bán hàng.
+- **Bước tiếp theo**: nhóm 6 — Ticket/Stats/AI/system-notification/tenant/upload. Nhóm 5 đã xong hết. **Nhóm 1 (cấu hình nhân sự) và nhóm 3 (chấm công/nghỉ phép) để sau cùng** theo thứ tự chủ dự án chốt 25/8. Đã xong: org/reference data 19/8 (mục 31–39), catalogue 25/8 (mục 58–73), Staff + StockMovement 25/8 phần 2 (mục 74–89), Order + Promotion + Customer 26/8 (mục 108–123).
+- **`CashDrawerSession` chưa đối chiếu với `CashFlow`** — ca quầy ghi số đếm được (đầu ca, từng phiếu ca, cuối ca) nhưng chưa ai so nó với các dòng `CashFlow` mà bán hàng sinh ra trong cùng ngày/chi nhánh. Đó là phần báo cáo lệch quỹ, chưa port; xem mục 119 về việc vì sao dòng tiền thối không gắn `orderId`.
+- **Còn một `follow-up migration` chưa làm**: `CHECK (num_nonnulls(branch_id, warehouse_id) = 1)` cho `inventories` — xem `prisma/schema.prisma` dòng ~617. Cùng loại với mục 132, và hiện chỉ có tầng ứng dụng chặn.
 - ~~e2e chưa chạy~~ — **đã trả xong 25/8 phần 4**: e2e 17/17 trên Postgres thật, kèm smoke suite phủ 4 module port hôm nay. Nợ này mở từ 20/8 — Docker Desktop không chạy trên máy lúc làm nên chỉ có `test/di-check.e2e-spec.ts` (không cần DB) được xác minh. Chạy `docker compose up -d && pnpm run test:e2e` trước khi commit đợt này.
 - ~~Còn nợ từ đợt 19/8~~ — đã trả xong cả hai: `Product.categoryName` (mục 62) và hạn mức công nợ NCC (mục 84), đều ngày 25/8.
 - **`WorkingSchedule` sẽ phải nới `StockMovementService.canActAt()`** — quyền tạm theo lịch làm việc (`managedScheduleAccess`) của bản cũ chưa có chỗ nào thay thế, xem mục 86.
 
-## Trạng thái git (cập nhật 2026-08-25, phần 2)
+## Trạng thái git (cập nhật 2026-08-26)
 
-- `iKiot-BE`: remote `origin` = `https://github.com/iKiotMS/nestjs-ikiot.git`, nhánh `main`, **6 commit** — mới nhất `4dbd691 adding AI coding rule`, trước đó `c976794 add branch warehouse`. Nghĩa là đợt 19/8 (org/reference data) và đợt review 20/8 (kèm mục `## Coding rules` trong CLAUDE.md) **đã được commit**.
-- **Chưa commit: 63 mục** — toàn bộ đợt 25/8: product + inventory (mục 58–73) và staff + stock movement (mục 74–89).
-- `iKiotMS-BE`: remote `origin` = `https://github.com/iKiotMS/iKiotMS-BE.git`. Chỉ có `CLAUDE.md` chưa commit, **không có thay đổi code nào** — đúng như quy ước một chiều.
+- `iKiot-BE`: remote `origin` = `https://github.com/iKiotMS/nestjs-ikiot.git`, nhánh `main`, **7 commit** — mới nhất `68cb643 add product, inventory and stock-movement`. Nghĩa là toàn bộ đợt 25/8 (product/inventory, staff/stock-movement, review, validator + smoke test) **đã được commit**.
+- **Chưa commit: 49 mục** — toàn bộ ngày 26/8: order + promotion + customer (mục 108–123), review/sửa (124–131), cash drawer (132–137), review/sửa cash drawer (138–141). Gồm **2 migration mới**.
+- `iKiotMS-BE`: remote `origin` = `https://github.com/iKiotMS/iKiotMS-BE.git`. Chỉ có `CLAUDE.md` chưa commit, **không có thay đổi code nào** — đúng quy ước một chiều.
 
 Đừng tin đoạn này nếu nó lệch với `git log`/`git status` thật — cập nhật lại đoạn này (hoặc thêm mục ngày mới) mỗi khi commit/push để nó không lạc hậu.

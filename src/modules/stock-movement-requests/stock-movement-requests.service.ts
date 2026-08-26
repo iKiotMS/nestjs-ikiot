@@ -333,16 +333,20 @@ export class StockMovementService {
         const lowStock: (Inventory | null)[] = [];
 
         if (isTransfer) {
-          await this.assertSourceStock(tx, request);
           const from = this.source(request);
           for (const line of request.details) {
             const quantity = Number(line.quantity);
-            const after = await this.inventory.adjustStock(tx, {
+            // `deductStock` is the check as well as the write. The `assertSourceStock`
+            // calls on open/close and when the lines are set are advisory — they tell the
+            // picker early that the stock isn't there. This is what actually stops two
+            // shipments emptying the same shelf twice.
+            const after = await this.inventory.deductStock(tx, {
               tenantId,
               productItemId: line.productItemId,
               branchId: from.branchId,
               warehouseId: from.warehouseId,
-              delta: -quantity,
+              quantity,
+              label: line.productItem.sku ?? line.productItemId,
             });
             lowStock.push(this.inventory.lowStockCrossing(after, -quantity));
           }

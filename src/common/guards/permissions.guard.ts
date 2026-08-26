@@ -10,7 +10,7 @@ import {
   RequiredPermission,
 } from '../decorators/permissions.decorator';
 import type { AuthUser } from '../types/auth-user.type';
-import { CUSTOMER_PERMISSIONS, SystemRole } from '../constants/system-role';
+import { can } from '../utils/permission';
 
 @Injectable()
 export class PermissionsGuard implements CanActivate {
@@ -26,20 +26,15 @@ export class PermissionsGuard implements CanActivate {
     const user = request.user;
     if (!user) throw new ForbiddenException('No authenticated user on request');
 
-    if (
-      user.systemRole === SystemRole.ADMIN ||
-      user.systemRole === SystemRole.TENANT_OWNER
-    )
-      return true;
-
-    const key = `${required.resource}:${required.action}`;
-    const allowed =
-      user.systemRole === SystemRole.CUSTOMER
-        ? CUSTOMER_PERMISSIONS.has(key)
-        : user.permissions.has(key);
-
+    // Any one of the declared actions is enough — see the @Permissions note.
+    const allowed = required.actions.some((action) =>
+      can(user, required.resource, action),
+    );
     if (!allowed) {
-      throw new ForbiddenException(`Missing permission ${key}`);
+      const keys = required.actions
+        .map((action) => `${required.resource}:${action}`)
+        .join(' or ');
+      throw new ForbiddenException(`Missing permission ${keys}`);
     }
     return true;
   }

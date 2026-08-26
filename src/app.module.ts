@@ -38,7 +38,6 @@ import { PaysheetModule } from './modules/paysheets/paysheets.module';
 import { PayslipModule } from './modules/payslips/payslips.module';
 import { PlanModule } from './modules/plans/plans.module';
 import { ProductModule } from './modules/products/products.module';
-import { PromotionLogModule } from './modules/promotion-logs/promotion-logs.module';
 import { PromotionModule } from './modules/promotions/promotions.module';
 import { ShiftTemplateModule } from './modules/shift-templates/shift-templates.module';
 import { StockMovementRequestModule } from './modules/stock-movement-requests/stock-movement-requests.module';
@@ -81,7 +80,6 @@ import { WorkingScheduleModule } from './modules/working-schedules/working-sched
     PayslipModule,
     PlanModule,
     ProductModule,
-    PromotionLogModule,
     PromotionModule,
     ShiftTemplateModule,
     StockMovementRequestModule,

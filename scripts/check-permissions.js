@@ -47,10 +47,17 @@ function walk(dir) {
     if (entry.isDirectory()) walk(full);
     else if (entry.name.endsWith('.ts')) {
       const src = fs.readFileSync(full, 'utf8');
-      for (const m of src.matchAll(/@Permissions\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)/g)) {
-        const key = `${m[1]}:${m[2]}`;
-        if (!used.has(key)) used.set(key, []);
-        used.get(key).push(path.relative(ROOT, full));
+      // Variadic since 2026-08-26: @Permissions('orders', 'update', 'pay_offline') means
+      // "any of", so every action listed still has to exist in the catalog.
+      for (const m of src.matchAll(/@Permissions\(\s*'([^']+)'((?:\s*,\s*'[^']+')+)\s*\)/g)) {
+        const resource = m[1];
+        // m[2] is the whole ", 'a', 'b'" tail — every action in it has to exist in the
+        // catalog, since holding any one of them is enough to pass the guard.
+        for (const a of m[2].matchAll(/'([^']+)'/g)) {
+          const key = `${resource}:${a[1]}`;
+          if (!used.has(key)) used.set(key, []);
+          used.get(key).push(path.relative(ROOT, full));
+        }
       }
     }
   }

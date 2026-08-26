@@ -1,82 +1,154 @@
 import {
   Body,
   Controller,
-  Delete,
   Get,
+  Headers,
+  HttpCode,
+  HttpStatus,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { OrderService } from './orders.service';
-import { CreateOrderDto } from './dto/create-orders.dto';
-import { UpdateOrderDto } from './dto/update-orders.dto';
+import { SepayOrderService } from './sepay-order.service';
+import {
+  CreateOrderDto,
+  PayOfflineOrderDto,
+  QueryOrderDto,
+  UpdateOrderStatusDto,
+} from './dto/order.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
-import {
-  requireTenantId,
-  resolveTenantScope,
-} from '../../common/utils/tenant-scope';
+import { Public } from '../../common/decorators/public.decorator';
+import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Generated CRUD, not a real port yet: gated by the global JwtAuthGuard, scoped to the
-// caller's tenant and permission-checked against the 'orders' catalog resource — but
-// the service underneath is plain Prisma CRUD, not the real business logic.
+/**
+ * Real port of iKiotMS-BE's OrderController — same five authenticated routes and the same
+ * permissions, plus the SePay webhook.
+ *
+ * There is no DELETE. A sale that shouldn't have happened is CANCELLED or RETURNED, both
+ * of which leave a trail; the `orders:delete` pair the generated CRUD introduced is unused.
+ */
 @ApiTags('orders')
 @ApiBearerAuth('bearer')
 @Controller('orders')
 export class OrderController {
   constructor(private readonly service: OrderService) {}
 
+  @Permissions('orders', 'create')
+  @Post()
+  create(@CurrentUser() user: AuthUser, @Body() dto: CreateOrderDto) {
+    return this.service.create(requireTenantId(user), user.userId, dto);
+  }
+
   @Permissions('orders', 'read')
   @Get()
-  findAll(@CurrentUser() user: AuthUser, @Query('tenantId') tenantId?: string) {
-    return this.service.findAll(resolveTenantScope(user, tenantId));
+  findAll(@CurrentUser() user: AuthUser, @Query() query: QueryOrderDto) {
+    return this.service.findAll(user, requireTenantId(user), query);
   }
 
   @Permissions('orders', 'read')
   @Get(':id')
   findOne(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
+    @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.service.findOne(resolveTenantScope(user, tenantId), id);
-  }
-
-  @Permissions('orders', 'create')
-  @Post()
-  create(
-    @CurrentUser() user: AuthUser,
-    @Body() dto: CreateOrderDto,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.create(
-      requireTenantId(user, tenantId),
-      user.userId,
-      dto,
-    );
+    return this.service.findOne(user, requireTenantId(user), id);
   }
 
   @Permissions('orders', 'update')
-  @Patch(':id')
-  update(
+  @Patch(':id/status')
+  updateStatus(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Body() dto: UpdateOrderDto,
-    @Query('tenantId') tenantId?: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateOrderStatusDto,
   ) {
-    return this.service.update(resolveTenantScope(user, tenantId), id, dto);
+    return this.service.updateStatus(requireTenantId(user), id, dto.status);
   }
 
-  @Permissions('orders', 'delete')
-  @Delete(':id')
-  remove(
+  /**
+   * Settles a SePay order the customer ended up paying some other way.
+   *
+   * Either permission is enough, matching iKiotMS-BE's
+   * `authorize("orders", ["update", "pay_offline"])` — that middleware resolved an array
+   * with `.some()`, so a role holding only `orders:update` could already do this and
+   * must not lose it to the port.
+   */
+  @Permissions('orders', 'update', 'pay_offline')
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/pay-offline')
+  payOffline(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: PayOfflineOrderDto,
   ) {
-    return this.service.remove(resolveTenantScope(user, tenantId), id);
+    return this.service.payOffline(requireTenantId(user), id, user.userId, dto);
+  }
+}
+
+/**
+ * The SePay order webhook, on its own controller because its path lives outside
+ * `/orders` — same layout as the subscription webhook.
+ *
+ * Answers 200 for every outcome, including the ones it refuses to act on: SePay retries
+ * anything else, and a retry loop against our own bug is worse than a missed callback we
+ * can see in the logs. Unlike the subscription webhook there is no shared secret to check
+ * against — the API key **is** the tenant lookup, so an unknown one is simply "not for us".
+ */
+@ApiTags('orders')
+@Controller('webhook/sepay')
+export class SepayOrderWebhookController {
+  constructor(
+    private readonly service: OrderService,
+    private readonly sepay: SepayOrderService,
+  ) {}
+
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @Post('order')
+  async handle(
+    @Headers('authorization') authHeader: string | undefined,
+    @Body() payload: Record<string, unknown>,
+  ) {
+    try {
+      if (payload.transferType !== 'in') return { success: true };
+
+      // SePay sends "Apikey <key>", not "Bearer <key>".
+      const apiKey = authHeader?.replace(/^Apikey\s+/i, '').trim() ?? '';
+      const tenant = await this.sepay.findTenantByWebhookKey(apiKey);
+      if (!tenant) return { success: false, message: 'Unknown API key' };
+
+      const reference = this.sepay.extractOrderReference(
+        typeof payload.content === 'string' ? payload.content : '',
+      );
+      if (!reference) {
+        return { success: false, message: 'No order reference found' };
+      }
+
+      // SePay sends its transaction id as a number; anything else is a malformed call.
+      const transactionId =
+        typeof payload.id === 'string' || typeof payload.id === 'number'
+          ? String(payload.id)
+          : '';
+
+      const order = await this.service.completeSepayOrder(
+        tenant.id,
+        reference,
+        transactionId,
+        Number(payload.transferAmount ?? 0),
+      );
+      return order
+        ? { success: true, message: 'Order payment confirmed' }
+        : { success: false, message: 'Order not found or already processed' };
+    } catch (error) {
+      return {
+        success: false,
+        message: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
   }
 }

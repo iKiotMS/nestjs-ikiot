@@ -113,6 +113,7 @@ const PORTED_MODELS = new Set([
   'AuditLog', 'Notification',
   'Branch', 'Warehouse', 'Supplier', 'Brand', 'Category',
   'Product', 'ProductItem', 'Inventory', 'StockMovementRequest',
+  'Order', 'Promotion', 'PromotionLog', 'Customer', 'CashDrawerSession',
 ]);
 
 // Fields the server fills in from the authenticated user instead of accepting from the

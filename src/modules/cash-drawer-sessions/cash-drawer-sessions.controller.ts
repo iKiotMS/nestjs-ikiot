@@ -1,78 +1,94 @@
 import {
   Body,
   Controller,
-  Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
-  Patch,
+  ParseUUIDPipe,
   Post,
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CashDrawerSessionService } from './cash-drawer-sessions.service';
-import { CreateCashDrawerSessionDto } from './dto/create-cash-drawer-sessions.dto';
-import { UpdateCashDrawerSessionDto } from './dto/update-cash-drawer-sessions.dto';
+import {
+  CurrentCashDrawerDto,
+  FinalizeCashDrawerDto,
+  OpenCashDrawerDto,
+  QueryCashDrawerDto,
+  SubmitShiftLogDto,
+} from './dto/cash-drawer.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
-import {
-  requireTenantId,
-  resolveTenantScope,
-} from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Generated CRUD, not a real port yet: gated by the global JwtAuthGuard, scoped to the
-// caller's tenant and permission-checked against the 'cash_drawers' catalog resource — but
-// the service underneath is plain Prisma CRUD, not the real business logic.
+/**
+ * Real port of iKiotMS-BE's CashDrawerController — same six routes, same permissions.
+ *
+ * The three read routes take `cash_drawers:read` **or** `read_own`, exactly as the old
+ * `authorize("cash_drawers", ["read", "read_own"])` did; which of the two the caller holds
+ * then decides how much they see (see CashDrawerSessionService.ownershipFilter).
+ *
+ * There is no PATCH or DELETE. A till session is a record of money changing hands — it is
+ * opened, logged and finalised, never edited. The `cash_drawers:create/update/delete` pairs
+ * the generated CRUD introduced stay unused.
+ */
 @ApiTags('cash-drawer-sessions')
 @ApiBearerAuth('bearer')
 @Controller('cash-drawer-sessions')
 export class CashDrawerSessionController {
   constructor(private readonly service: CashDrawerSessionService) {}
 
-  @Permissions('cash_drawers', 'read')
-  @Get()
-  findAll(@CurrentUser() user: AuthUser, @Query('tenantId') tenantId?: string) {
-    return this.service.findAll(resolveTenantScope(user, tenantId));
+  @Permissions('cash_drawers', 'open')
+  @Post()
+  open(@CurrentUser() user: AuthUser, @Body() dto: OpenCashDrawerDto) {
+    return this.service.open(user, dto);
   }
 
-  @Permissions('cash_drawers', 'read')
+  // `current` is declared above `:id` — both are one segment deep, so the literal has to
+  // come first or it is matched as a session id.
+  @Permissions('cash_drawers', 'read', 'read_own')
+  @Get('current')
+  current(@CurrentUser() user: AuthUser, @Query() query: CurrentCashDrawerDto) {
+    return this.service.current(user, query.branchId);
+  }
+
+  @Permissions('cash_drawers', 'read', 'read_own')
+  @Get()
+  findAll(@CurrentUser() user: AuthUser, @Query() query: QueryCashDrawerDto) {
+    return this.service.findAll(user, query);
+  }
+
+  @Permissions('cash_drawers', 'read', 'read_own')
   @Get(':id')
   findOne(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
+    @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.service.findOne(resolveTenantScope(user, tenantId), id);
+    return this.service.findOne(user, id);
   }
 
-  @Permissions('cash_drawers', 'create')
-  @Post()
-  create(
+  /** A cashier taking the drawer (START) or handing it back (END). */
+  @Permissions('cash_drawers', 'report')
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/shift-logs')
+  submitShiftLog(
     @CurrentUser() user: AuthUser,
-    @Body() dto: CreateCashDrawerSessionDto,
-    @Query('tenantId') tenantId?: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SubmitShiftLogDto,
   ) {
-    return this.service.create(requireTenantId(user, tenantId), dto);
+    return this.service.submitShiftLog(user, id, dto);
   }
 
-  @Permissions('cash_drawers', 'update')
-  @Patch(':id')
-  update(
+  /** Closes the day with a counted total. */
+  @Permissions('cash_drawers', 'finalize')
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/finalize')
+  finalize(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Body() dto: UpdateCashDrawerSessionDto,
-    @Query('tenantId') tenantId?: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FinalizeCashDrawerDto,
   ) {
-    return this.service.update(resolveTenantScope(user, tenantId), id, dto);
-  }
-
-  @Permissions('cash_drawers', 'delete')
-  @Delete(':id')
-  remove(
-    @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.remove(resolveTenantScope(user, tenantId), id);
+    return this.service.finalize(user, id, dto);
   }
 }
