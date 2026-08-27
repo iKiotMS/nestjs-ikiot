@@ -17,6 +17,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import { Public } from '../../common/decorators/public.decorator';
+import { RawResponse } from '../../common/decorators/raw-response.decorator';
 import { AdminOnlyGuard } from '../../common/guards/admin-only.guard';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
@@ -104,6 +105,7 @@ export class SubscriptionController {
   // Called by SePay when money arrives in iKiot's own bank account. Answers 200 for every
   // outcome — SePay must not be given a reason to retry indefinitely on our bugs — except
   // a bad API key, where the service throws a 401.
+  @RawResponse()
   @Public()
   @HttpCode(HttpStatus.OK)
   @Post('webhook/sepay')

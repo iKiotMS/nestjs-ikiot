@@ -1,8 +1,13 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CreateCashFlowDto } from './dto/create-cash-flows.dto';
-import { UpdateCashFlowDto } from './dto/update-cash-flows.dto';
 
+/**
+ * Reads over the money ledger. Nothing here writes — see the controller for why.
+ *
+ * The real transaction listing (filters, date range, running totals) belongs to the stats
+ * module, which is iKiotMS-BE's `/stats/cashflow` and `/stats/cashflow/transactions`.
+ * Until that lands, `findAll` is the unfiltered list the generated module shipped with.
+ */
 @Injectable()
 export class CashFlowService {
   constructor(private readonly prisma: PrismaService) {}
@@ -10,6 +15,7 @@ export class CashFlowService {
   findAll(tenantId?: string) {
     return this.prisma.cashFlow.findMany({
       where: { ...(tenantId ? { tenantId } : {}) },
+      orderBy: { createdAt: 'desc' },
     });
   }
 
@@ -22,25 +28,5 @@ export class CashFlowService {
     });
     if (!found) throw new NotFoundException('CashFlow not found');
     return found;
-  }
-
-  create(tenantId: string, actorId: string, data: CreateCashFlowDto) {
-    return this.prisma.cashFlow.create({
-      data: { ...data, tenantId, createdById: actorId },
-    });
-  }
-
-  async update(
-    tenantId: string | undefined,
-    id: string,
-    data: UpdateCashFlowDto,
-  ) {
-    await this.findOne(tenantId, id);
-    return this.prisma.cashFlow.update({ where: { id }, data });
-  }
-
-  async remove(tenantId: string | undefined, id: string) {
-    await this.findOne(tenantId, id);
-    return this.prisma.cashFlow.delete({ where: { id } });
   }
 }

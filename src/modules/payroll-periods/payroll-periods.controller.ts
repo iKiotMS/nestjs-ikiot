@@ -1,8 +1,9 @@
 import {
   Body,
   Controller,
-  Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   Patch,
   Post,
@@ -10,69 +11,183 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { PayrollPeriodService } from './payroll-periods.service';
-import { CreatePayrollPeriodDto } from './dto/create-payroll-periods.dto';
-import { UpdatePayrollPeriodDto } from './dto/update-payroll-periods.dto';
+import {
+  GeneratePayrollDto,
+  PayrollActionDto,
+  PreviewPayrollDto,
+  QueryPayrollPeriodDto,
+  UpdateDraftPayslipDto,
+} from './dto/payroll-period.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
-import {
-  requireTenantId,
-  resolveTenantScope,
-} from '../../common/utils/tenant-scope';
+import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Generated CRUD, not a real port yet: gated by the global JwtAuthGuard, scoped to the
-// caller's tenant and permission-checked against the 'payroll' catalog resource — but
-// the service underneath is plain Prisma CRUD, not the real business logic.
-@ApiTags('payroll-periods')
+/**
+ * Nine routes at the old paths, under `/payroll`.
+ *
+ * The five transitions are separate routes rather than one `PATCH ?action=` — that is how
+ * the old API had them, and it is also what lets each carry its own permission later
+ * without reshaping the URL.
+ */
+@ApiTags('payroll')
 @ApiBearerAuth('bearer')
-@Controller('payroll-periods')
+@Controller('payroll')
 export class PayrollPeriodController {
   constructor(private readonly service: PayrollPeriodService) {}
 
+  /**
+   * A what-if. Takes either an explicit range or a month; nothing is written either way,
+   * which is why it is gated on `read` rather than `create`.
+   */
   @Permissions('payroll', 'read')
-  @Get()
-  findAll(@CurrentUser() user: AuthUser, @Query('tenantId') tenantId?: string) {
-    return this.service.findAll(resolveTenantScope(user, tenantId));
-  }
-
-  @Permissions('payroll', 'read')
-  @Get(':id')
-  findOne(
+  @HttpCode(HttpStatus.OK)
+  @Post('preview')
+  preview(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
+    @Body() body: PreviewPayrollDto & GeneratePayrollDto,
   ) {
-    return this.service.findOne(resolveTenantScope(user, tenantId), id);
+    const tenantId = requireTenantId(user);
+    return body.payrollMonth
+      ? this.service.previewMonth(tenantId, body)
+      : this.service.preview(tenantId, body);
   }
 
   @Permissions('payroll', 'create')
-  @Post()
-  create(
+  @Post('periods')
+  generate(@CurrentUser() user: AuthUser, @Body() dto: GeneratePayrollDto) {
+    return this.service.generate(requireTenantId(user), user.userId, dto);
+  }
+
+  @Permissions('payroll', 'read')
+  @Get('periods')
+  findAll(
     @CurrentUser() user: AuthUser,
-    @Body() dto: CreatePayrollPeriodDto,
-    @Query('tenantId') tenantId?: string,
+    @Query() query: QueryPayrollPeriodDto,
   ) {
-    return this.service.create(requireTenantId(user, tenantId), dto);
+    return this.service.findAll(requireTenantId(user), query);
+  }
+
+  @Permissions('payroll', 'read')
+  @Get('periods/:periodId')
+  findOne(
+    @CurrentUser() user: AuthUser,
+    @Param('periodId') periodId: string,
+    @Query() query: QueryPayrollPeriodDto,
+  ) {
+    return this.service.findOne(requireTenantId(user), periodId, query);
+  }
+
+  @Permissions('payroll', 'read')
+  @Get('periods/:periodId/payslips/:payslipId')
+  findPayslip(
+    @CurrentUser() user: AuthUser,
+    @Param('periodId') periodId: string,
+    @Param('payslipId') payslipId: string,
+  ) {
+    return this.service.findPayslip(requireTenantId(user), periodId, payslipId);
   }
 
   @Permissions('payroll', 'update')
-  @Patch(':id')
-  update(
+  @Patch('periods/:periodId/payslips/:payslipId')
+  updateDraftPayslip(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Body() dto: UpdatePayrollPeriodDto,
-    @Query('tenantId') tenantId?: string,
+    @Param('periodId') periodId: string,
+    @Param('payslipId') payslipId: string,
+    @Body() dto: UpdateDraftPayslipDto,
   ) {
-    return this.service.update(resolveTenantScope(user, tenantId), id, dto);
+    return this.service.updateDraftPayslip(
+      requireTenantId(user),
+      user.userId,
+      periodId,
+      payslipId,
+      dto,
+    );
   }
 
-  @Permissions('payroll', 'delete')
-  @Delete(':id')
-  remove(
+  @Permissions('payroll', 'update')
+  @HttpCode(HttpStatus.OK)
+  @Post('periods/:periodId/submit')
+  submit(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
+    @Param('periodId') periodId: string,
+    @Body() dto: PayrollActionDto,
   ) {
-    return this.service.remove(resolveTenantScope(user, tenantId), id);
+    return this.service.changeStatus(
+      requireTenantId(user),
+      user.userId,
+      periodId,
+      'SUBMIT',
+      dto,
+    );
+  }
+
+  @Permissions('payroll', 'update')
+  @HttpCode(HttpStatus.OK)
+  @Post('periods/:periodId/return-to-draft')
+  returnToDraft(
+    @CurrentUser() user: AuthUser,
+    @Param('periodId') periodId: string,
+    @Body() dto: PayrollActionDto,
+  ) {
+    return this.service.changeStatus(
+      requireTenantId(user),
+      user.userId,
+      periodId,
+      'RETURN_TO_DRAFT',
+      dto,
+    );
+  }
+
+  @Permissions('payroll', 'update')
+  @HttpCode(HttpStatus.OK)
+  @Post('periods/:periodId/cancel')
+  cancel(
+    @CurrentUser() user: AuthUser,
+    @Param('periodId') periodId: string,
+    @Body() dto: PayrollActionDto,
+  ) {
+    return this.service.changeStatus(
+      requireTenantId(user),
+      user.userId,
+      periodId,
+      'CANCEL',
+      dto,
+    );
+  }
+
+  @Permissions('payroll', 'update')
+  @HttpCode(HttpStatus.OK)
+  @Post('periods/:periodId/approve')
+  approve(
+    @CurrentUser() user: AuthUser,
+    @Param('periodId') periodId: string,
+    @Body() dto: PayrollActionDto,
+  ) {
+    return this.service.changeStatus(
+      requireTenantId(user),
+      user.userId,
+      periodId,
+      'APPROVE',
+      dto,
+    );
+  }
+
+  /** Writes the CashFlow expense row and flips the status in one transaction. */
+  @Permissions('payroll', 'update')
+  @HttpCode(HttpStatus.OK)
+  @Post('periods/:periodId/mark-paid')
+  markPaid(
+    @CurrentUser() user: AuthUser,
+    @Param('periodId') periodId: string,
+    @Body() dto: PayrollActionDto,
+  ) {
+    return this.service.changeStatus(
+      requireTenantId(user),
+      user.userId,
+      periodId,
+      'MARK_PAID',
+      dto,
+    );
   }
 }

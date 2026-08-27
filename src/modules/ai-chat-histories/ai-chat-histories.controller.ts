@@ -3,80 +3,73 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
-  Patch,
   Post,
+  Put,
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AIChatHistoryService } from './ai-chat-histories.service';
-import { CreateAIChatHistoryDto } from './dto/create-ai-chat-histories.dto';
-import { UpdateAIChatHistoryDto } from './dto/update-ai-chat-histories.dto';
+import { ChatDto, RenameConversationDto } from './dto/ai-chat.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
-import {
-  requireTenantId,
-  resolveTenantScope,
-} from '../../common/utils/tenant-scope';
+import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Generated CRUD, not a real port yet: gated by the global JwtAuthGuard, scoped to the
-// caller's tenant and permission-checked against the 'ai_chat' catalog resource — but
-// the service underneath is plain Prisma CRUD, not the real business logic.
-@ApiTags('ai-chat-histories')
+/**
+ * Five routes at the old paths, under `/ai`.
+ *
+ * The old router gated these with an inline `authorizeRoles("TENANT_OWNER",
+ * "BRANCH_MANAGER")` — two of the fixed roles that no longer exist. They are gated on the
+ * `ai_chat` catalog resource instead, so a shop decides for itself who may use the
+ * assistant. What that person can then *see* through it is a separate question, answered per
+ * tool by `AiToolsService` against their own permissions.
+ */
+@ApiTags('ai')
 @ApiBearerAuth('bearer')
-@Controller('ai-chat-histories')
+@Controller('ai')
 export class AIChatHistoryController {
   constructor(private readonly service: AIChatHistoryService) {}
 
-  @Permissions('ai_chat', 'read')
-  @Get()
-  findAll(@CurrentUser() user: AuthUser, @Query('tenantId') tenantId?: string) {
-    return this.service.findAll(resolveTenantScope(user, tenantId));
-  }
-
-  @Permissions('ai_chat', 'read')
-  @Get(':id')
-  findOne(
-    @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.findOne(resolveTenantScope(user, tenantId), id);
-  }
-
+  /**
+   * `create` rather than `read`: it writes a conversation, calls a paid API, and reaches
+   * into the shop's data. Someone who may only read their old transcripts should not be
+   * able to start new ones.
+   */
   @Permissions('ai_chat', 'create')
-  @Post()
-  create(
-    @CurrentUser() user: AuthUser,
-    @Body() dto: CreateAIChatHistoryDto,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.create(
-      requireTenantId(user, tenantId),
-      user.userId,
-      dto,
-    );
+  @HttpCode(HttpStatus.OK)
+  @Post('chat')
+  chat(@CurrentUser() user: AuthUser, @Body() dto: ChatDto) {
+    return this.service.chat(user, dto);
+  }
+
+  @Permissions('ai_chat', 'read')
+  @Get('conversations')
+  findAll(@CurrentUser() user: AuthUser, @Query() query: PaginationQueryDto) {
+    return this.service.findAll(user, query);
+  }
+
+  @Permissions('ai_chat', 'read')
+  @Get('conversations/:id')
+  findOne(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.service.findOne(user, id);
   }
 
   @Permissions('ai_chat', 'update')
-  @Patch(':id')
-  update(
+  @Put('conversations/:id')
+  rename(
     @CurrentUser() user: AuthUser,
     @Param('id') id: string,
-    @Body() dto: UpdateAIChatHistoryDto,
-    @Query('tenantId') tenantId?: string,
+    @Body() dto: RenameConversationDto,
   ) {
-    return this.service.update(resolveTenantScope(user, tenantId), id, dto);
+    return this.service.rename(user, id, dto);
   }
 
   @Permissions('ai_chat', 'delete')
-  @Delete(':id')
-  remove(
-    @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.remove(resolveTenantScope(user, tenantId), id);
+  @Delete('conversations/:id')
+  remove(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.service.remove(user, id);
   }
 }

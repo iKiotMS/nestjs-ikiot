@@ -12,6 +12,7 @@ import { SystemRole } from '../../common/constants/system-role';
 import { can } from '../../common/utils/permission';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import type { AuthUser } from '../../common/types/auth-user.type';
+import { supervisesLocation } from '../working-schedules/shift-supervisor.service';
 import { businessDate } from './business-date';
 import { CashDrawerStatus, ShiftLogType } from './cash-drawer.constants';
 import {
@@ -67,8 +68,8 @@ type SessionRow = Prisma.CashDrawerSessionGetPayload<{
  * `@@unique` the schema shipped with capped a branch at one *closed* session for all time,
  * which would have failed on the second day of use.
  *
- * **Access is a substitution.** The old service branched on BRANCH_MANAGER/STAFF and on
- * `managedScheduleAccess`. Neither exists here, so: the branch comes from where the account
+ * **Access is a substitution.** The old service branched on BRANCH_MANAGER/STAFF; that role
+ * is gone, so the branch comes from where the account
  * is posted (an owner, posted nowhere, names one), and `cash_drawers:read` vs `read_own`
  * decides whether they see the whole branch's sessions or only the ones they worked. Both
  * pairs were already in the catalog, unused — this is what they were for.
@@ -362,7 +363,17 @@ export class CashDrawerSessionService {
     required = true,
   ): string | null {
     if (user.branchId) {
-      if (requested && requested !== user.branchId) {
+      // A shift supervisor reaches the branch their live shift covers — which
+      // `ShiftSupervisorService` has already intersected with their own posting, so in
+      // practice this is the same branch. It is checked anyway so the rule reads the same
+      // here as it does in stock movements. (iKiotMS-BE's `managedScheduleAccess`.)
+      const allowed =
+        requested === user.branchId ||
+        supervisesLocation(user.shiftSupervision, {
+          branchId: requested ?? null,
+          warehouseId: null,
+        });
+      if (requested && !allowed) {
         throw new ForbiddenException(
           'Bạn không thao tác được với quầy của chi nhánh khác',
         );

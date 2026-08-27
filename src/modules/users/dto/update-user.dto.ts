@@ -1,7 +1,6 @@
 import { Type } from 'class-transformer';
 import {
   IsDateString,
-  IsEmail,
   IsIn,
   IsOptional,
   IsString,
@@ -9,6 +8,7 @@ import {
   MaxLength,
   ValidateNested,
 } from 'class-validator';
+import { NormalizeEmail } from '../../../common/decorators/normalize-email.decorator';
 
 /** The personal details on a staff record. Flattened to `profile_*` columns in Postgres. */
 export class StaffProfileDto {
@@ -69,7 +69,7 @@ export class StaffProfileDto {
  */
 export class UpdateUserDto {
   @IsOptional()
-  @IsEmail()
+  @NormalizeEmail()
   email?: string;
 
   /** The tenant-defined Role this account holds. */

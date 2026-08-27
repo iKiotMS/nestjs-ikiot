@@ -832,6 +832,11 @@ model Holiday {
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  // Covers the branch-scoped COMPANY_HOLIDAY rows only: branch_id is NULL on every
+  // PUBLIC_HOLIDAY, and a NULL in a Postgres unique index constrains nothing. "One public
+  // holiday per tenant per date" is a partial index instead — see the follow-up migration
+  // 20260827020000_holiday_unique_public_per_date, which is SQL-only because the DSL has
+  // no WHERE clause.
   @@unique([tenantId, date, branchId, type])
   @@map("holidays")
 }
@@ -1103,26 +1108,31 @@ model PayslipManualAdjustment {
 // ─────────────────────────────────────────────────────────────────────────
 
 model Order {
-  id               String   @id @default(uuid())
-  tenantId         String   @map("tenant_id")
-  tenant           Tenant   @relation(fields: [tenantId], references: [id])
-  branchId         String   @map("branch_id")
-  branch           Branch   @relation(fields: [branchId], references: [id])
-  customerId       String   @map("customer_id")
-  customer         Customer @relation(fields: [customerId], references: [id])
-  status           String   @default("PENDING") // PENDING | COMPLETED | CANCELLED | RETURNED
-  userId           String   @map("user_id")
-  user             User     @relation(fields: [userId], references: [id])
-  paymentMethod    String   @map("payment_method") // CASH | BANK_TRANSFER | MOMO | VNPAY | SEPAY
-  paymentReference String?  @unique @map("payment_reference")
-  grandTotal       Decimal  @map("grand_total") @db.Decimal(14, 2)
-  customerPay      Decimal? @map("customer_pay") @db.Decimal(14, 2)
-  change           Decimal? @db.Decimal(14, 2)
-  note             String?
-  discountType     String?  @map("discount_type") // ORDER | PROMOTION
-  discountValue    Decimal  @default(0) @map("discount_value") @db.Decimal(14, 2)
-  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id                 String   @id @default(uuid())
+  tenantId           String   @map("tenant_id")
+  tenant             Tenant   @relation(fields: [tenantId], references: [id])
+  branchId           String   @map("branch_id")
+  branch             Branch   @relation(fields: [branchId], references: [id])
+  customerId         String   @map("customer_id")
+  customer           Customer @relation(fields: [customerId], references: [id])
+  status             String   @default("PENDING") // PENDING | COMPLETED | CANCELLED | RETURNED
+  userId             String   @map("user_id")
+  user               User     @relation(fields: [userId], references: [id])
+  paymentMethod      String   @map("payment_method") // CASH | BANK_TRANSFER | MOMO | VNPAY | SEPAY
+  paymentReference   String?  @unique @map("payment_reference")
+  // SePay's own id for the bank transfer that settled this order — the only key linking a
+  // row here to a line on the bank statement. String, not the old model's Number: the
+  // webhook payload is untyped JSON and an id is an identifier, not a quantity. Matches
+  // SubscriptionInvoice.transactionRef.
+  sepayTransactionId String?  @map("sepay_transaction_id")
+  grandTotal         Decimal  @map("grand_total") @db.Decimal(14, 2)
+  customerPay        Decimal? @map("customer_pay") @db.Decimal(14, 2)
+  change             Decimal? @db.Decimal(14, 2)
+  note               String?
+  discountType       String?  @map("discount_type") // ORDER | PROMOTION
+  discountValue      Decimal  @default(0) @map("discount_value") @db.Decimal(14, 2)
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   items             OrderItem[]
   appliedPromotions OrderAppliedPromotion[]
@@ -1299,28 +1309,30 @@ model CashDrawerShiftLog {
 }
 
 model CashFlow {
-  id               String         @id @default(uuid())
-  tenantId         String         @map("tenant_id")
-  tenant           Tenant         @relation(fields: [tenantId], references: [id])
-  flowType         String         @map("flow_type") // INCOME | EXPENSE
-  amount           Decimal        @db.Decimal(14, 2)
-  paymentMethod    String?        @map("payment_method") // CASH | BANK_TRANSFER | MOMO | VNPAY | SEPAY
-  branchId         String?        @map("branch_id")
-  branch           Branch?        @relation(fields: [branchId], references: [id])
-  warehouseId      String?        @map("warehouse_id")
-  warehouse        Warehouse?     @relation(fields: [warehouseId], references: [id])
-  orderId          String?        @map("order_id")
-  order            Order?         @relation(fields: [orderId], references: [id])
-  supplierId       String?        @map("supplier_id")
-  supplier         Supplier?      @relation(fields: [supplierId], references: [id])
-  payrollPeriodId  String?        @unique @map("payroll_period_id")
-  payrollPeriod    PayrollPeriod? @relation("CashFlowPayrollPeriod", fields: [payrollPeriodId], references: [id])
-  createdById      String?        @map("created_by")
-  createdBy        User?          @relation(fields: [createdById], references: [id])
-  paymentReference String?        @map("payment_reference")
-  description      String?
-  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt        DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id                 String         @id @default(uuid())
+  tenantId           String         @map("tenant_id")
+  tenant             Tenant         @relation(fields: [tenantId], references: [id])
+  flowType           String         @map("flow_type") // INCOME | EXPENSE
+  amount             Decimal        @db.Decimal(14, 2)
+  paymentMethod      String?        @map("payment_method") // CASH | BANK_TRANSFER | MOMO | VNPAY | SEPAY
+  branchId           String?        @map("branch_id")
+  branch             Branch?        @relation(fields: [branchId], references: [id])
+  warehouseId        String?        @map("warehouse_id")
+  warehouse          Warehouse?     @relation(fields: [warehouseId], references: [id])
+  orderId            String?        @map("order_id")
+  order              Order?         @relation(fields: [orderId], references: [id])
+  supplierId         String?        @map("supplier_id")
+  supplier           Supplier?      @relation(fields: [supplierId], references: [id])
+  payrollPeriodId    String?        @unique @map("payroll_period_id")
+  payrollPeriod      PayrollPeriod? @relation("CashFlowPayrollPeriod", fields: [payrollPeriodId], references: [id])
+  createdById        String?        @map("created_by")
+  createdBy          User?          @relation(fields: [createdById], references: [id])
+  paymentReference   String?        @map("payment_reference")
+  // Carried on the money row too, not just the order: reconciliation reads CashFlow.
+  sepayTransactionId String?        @map("sepay_transaction_id")
+  description        String?
+  createdAt          DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   // back-relation for PayrollPeriod.cashFlowId (a period's canonical payment row points here)
   payrollPeriodOwner PayrollPeriod? @relation("PayrollPeriodCashFlow")

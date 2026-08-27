@@ -34,9 +34,11 @@ export class OrderItemDto {
   unitPrice: number;
 
   /**
-   * What comes off this line. For a promotion this is the per-item allocation
-   * `POST /promotions/calculate` returned — the server recomputes the order total from
-   * these, so sending back what the preview said is what makes the two agree.
+   * A **manual** discount the cashier typed against this line.
+   *
+   * Ignored when the order carries `appliedPromotions`: the server prices those itself and
+   * overwrites every line with the engine's allocation, so a promotion and a hand-typed
+   * line discount can't be mixed on the same sale. See `OrderService.priceOrder`.
    */
   @IsOptional()
   @Type(() => Number)
@@ -45,20 +47,18 @@ export class OrderItemDto {
   discountAmount?: number;
 }
 
-/** What the till sends when a sale is rung up. */
+/**
+ * A promotion the cashier picked, named by id and nothing else.
+ *
+ * `promoName` and `discountAmount` used to be accepted here and are gone: what a promotion
+ * is called and what it takes off are facts about the promotion, and the server now works
+ * both out through the pricing engine. Sending them is harmless — `ValidationPipe`'s
+ * `whitelist: true` strips unknown keys — so a client written against the old shape keeps
+ * working, it just no longer decides the numbers.
+ */
 export class AppliedPromotionDto {
   @IsUUID()
   promotionId: string;
-
-  @IsOptional()
-  @IsString()
-  promoName?: string;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @Min(0)
-  discountAmount?: number;
 }
 
 /**
@@ -104,21 +104,30 @@ export class CreateOrderDto {
 
   /**
    * `ORDER` = a manual, whole-order discount the cashier typed in (`discountValue`).
-   * `PROMOTION` = the discount came from the promotion engine and is already spread across
-   * the lines, so `discountValue` is a record of the total rather than a second deduction.
+   *
+   * `PROMOTION` is **not accepted from the client**: sending `appliedPromotions` is what
+   * makes a sale a promotion sale, and the server then sets both this and `discountValue`
+   * from what the engine actually worked out. Asking the client to declare a total it
+   * doesn't compute is how the two ended up able to disagree.
    */
   @IsOptional()
-  @IsIn(['ORDER', 'PROMOTION'], {
-    message: 'discountType phải là ORDER hoặc PROMOTION',
+  @IsIn(['ORDER'], {
+    message:
+      'discountType chỉ nhận ORDER — giảm giá khuyến mãi do máy chủ tự tính từ appliedPromotions',
   })
   discountType?: string;
 
+  /** The manual whole-order discount. Only read when `discountType` is `ORDER`. */
   @IsOptional()
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0, { message: 'Giá trị giảm không được âm' })
   discountValue?: number;
 
+  /**
+   * The promotions the cashier picked. The server prices them, spreads the discount across
+   * the lines and records the total — the client only names them.
+   */
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })

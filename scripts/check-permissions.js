@@ -59,6 +59,16 @@ function walk(dir) {
           used.get(key).push(path.relative(ROOT, full));
         }
       }
+
+      // The AI assistant gates each of its thirty tools on a catalog pair too, but from a
+      // lookup table rather than a decorator — and a typo there fails *open* in the worst
+      // way imaginable: `can()` is never consulted for a resource nobody holds, so the tool
+      // simply runs. Caught here instead. Shape: `toolName: ['resource', 'action'],`
+      for (const m of src.matchAll(/^\s{2}\w+: \['([a-zA-Z_]+)', '([a-z_]+)'\],$/gm)) {
+        const key = `${m[1]}:${m[2]}`;
+        if (!used.has(key)) used.set(key, []);
+        used.get(key).push(path.relative(ROOT, full));
+      }
     }
   }
 }

@@ -1,8 +1,9 @@
 import {
   Body,
   Controller,
-  Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   Patch,
   Post,
@@ -10,19 +11,24 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AttendanceService } from './attendances.service';
-import { CreateAttendanceDto } from './dto/create-attendances.dto';
-import { UpdateAttendanceDto } from './dto/update-attendances.dto';
+import {
+  CheckInDto,
+  CheckOutDto,
+  CreateManualAttendanceDto,
+  ManualCheckoutDto,
+  QueryAttendanceDto,
+} from './dto/attendance.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
-import {
-  requireTenantId,
-  resolveTenantScope,
-} from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Generated CRUD, not a real port yet: gated by the global JwtAuthGuard, scoped to the
-// caller's tenant and permission-checked against the 'attendances' catalog resource — but
-// the service underneath is plain Prisma CRUD, not the real business logic.
+/**
+ * Seven routes at the old paths and with the old permissions. `me` is declared above
+ * `:id` so it isn't matched as an attendance id.
+ *
+ * Note `check-out` is gated on `attendances:update`, not `create` — that is how the old
+ * route had it, and it is right: closing a shift edits the row check-in opened.
+ */
 @ApiTags('attendances')
 @ApiBearerAuth('bearer')
 @Controller('attendances')
@@ -31,48 +37,51 @@ export class AttendanceController {
 
   @Permissions('attendances', 'read')
   @Get()
-  findAll(@CurrentUser() user: AuthUser, @Query('tenantId') tenantId?: string) {
-    return this.service.findAll(resolveTenantScope(user, tenantId));
+  findAll(@CurrentUser() user: AuthUser, @Query() query: QueryAttendanceDto) {
+    return this.service.findAll(user, query);
   }
 
-  @Permissions('attendances', 'read')
+  @Permissions('attendances', 'read_own')
+  @Get('me')
+  findMine(@CurrentUser() user: AuthUser, @Query() query: QueryAttendanceDto) {
+    return this.service.findMine(user, query);
+  }
+
+  @Permissions('attendances', 'read', 'read_own')
   @Get(':id')
-  findOne(
-    @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.findOne(resolveTenantScope(user, tenantId), id);
+  findOne(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.service.findOne(user, id);
   }
 
   @Permissions('attendances', 'create')
-  @Post()
-  create(
-    @CurrentUser() user: AuthUser,
-    @Body() dto: CreateAttendanceDto,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.create(requireTenantId(user, tenantId), dto);
+  @Post('check-in')
+  checkIn(@CurrentUser() user: AuthUser, @Body() dto: CheckInDto) {
+    return this.service.checkIn(user, dto);
   }
 
   @Permissions('attendances', 'update')
-  @Patch(':id')
-  update(
-    @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Body() dto: UpdateAttendanceDto,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.update(resolveTenantScope(user, tenantId), id, dto);
+  @HttpCode(HttpStatus.OK)
+  @Post('check-out')
+  checkOut(@CurrentUser() user: AuthUser, @Body() dto: CheckOutDto) {
+    return this.service.checkOut(user, dto);
   }
 
-  @Permissions('attendances', 'delete')
-  @Delete(':id')
-  remove(
+  @Permissions('attendances', 'update')
+  @Post('manual')
+  createManual(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: CreateManualAttendanceDto,
+  ) {
+    return this.service.createManual(user, dto);
+  }
+
+  @Permissions('attendances', 'update')
+  @Patch(':id/manual-checkout')
+  manualCheckout(
     @CurrentUser() user: AuthUser,
     @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
+    @Body() dto: ManualCheckoutDto,
   ) {
-    return this.service.remove(resolveTenantScope(user, tenantId), id);
+    return this.service.manualCheckout(user, id, dto);
   }
 }

@@ -6,12 +6,16 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { OtpService } from './otp.service';
+import { RefreshTokenService } from './refresh-token.service';
 import { EsmsService } from './esms.service';
 import { FirebaseService } from './firebase.service';
+import { WorkingScheduleModule } from '../working-schedules/working-schedules.module';
 
 @Module({
   imports: [
     PassportModule,
+    // JwtStrategy resolves shift-supervisor rights on every request — see its comment.
+    WorkingScheduleModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -26,6 +30,7 @@ import { FirebaseService } from './firebase.service';
     AuthService,
     JwtStrategy,
     OtpService,
+    RefreshTokenService,
     EsmsService,
     FirebaseService,
   ],

@@ -1,28 +1,29 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Param,
-  Patch,
-  Post,
-  Query,
-} from '@nestjs/common';
+import { Controller, Get, Param, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CashFlowService } from './cash-flows.service';
-import { CreateCashFlowDto } from './dto/create-cash-flows.dto';
-import { UpdateCashFlowDto } from './dto/update-cash-flows.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
-import {
-  requireTenantId,
-  resolveTenantScope,
-} from '../../common/utils/tenant-scope';
+import { resolveTenantScope } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Generated CRUD, not a real port yet: gated by the global JwtAuthGuard, scoped to the
-// caller's tenant and permission-checked against the 'cash_flows' catalog resource — but
-// the service underneath is plain Prisma CRUD, not the real business logic.
+/**
+ * **Read-only, and that is the whole design.**
+ *
+ * iKiotMS-BE never exposed a route that wrote a `CashFlow` row. The ledger is written by
+ * the events that actually moved money — a completed sale and its change
+ * (`OrderService.writeSaleCashFlows`), a return, a supplier debt payment
+ * (`SupplierService.payDebt`), a payroll period being marked paid — and read back through
+ * the stats endpoints. The generated CRUD introduced `POST`/`PATCH`/`DELETE` here, which
+ * is a way to book revenue that never happened, delete revenue that did, and put the till
+ * count out of step with the sales that produced it. Removed.
+ *
+ * If a shop genuinely needs to record cash that no other flow explains, that is a feature
+ * with its own rules (who may, against which branch, with what justification) — not a
+ * generic `POST` over the ledger.
+ *
+ * The `cash_flows:create`/`update`/`delete` catalog pairs are consequently unused;
+ * `scripts/check-permissions.js` lists them, which is expected.
+ */
 @ApiTags('cash-flows')
 @ApiBearerAuth('bearer')
 @Controller('cash-flows')
@@ -43,40 +44,5 @@ export class CashFlowController {
     @Query('tenantId') tenantId?: string,
   ) {
     return this.service.findOne(resolveTenantScope(user, tenantId), id);
-  }
-
-  @Permissions('cash_flows', 'create')
-  @Post()
-  create(
-    @CurrentUser() user: AuthUser,
-    @Body() dto: CreateCashFlowDto,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.create(
-      requireTenantId(user, tenantId),
-      user.userId,
-      dto,
-    );
-  }
-
-  @Permissions('cash_flows', 'update')
-  @Patch(':id')
-  update(
-    @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Body() dto: UpdateCashFlowDto,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.update(resolveTenantScope(user, tenantId), id, dto);
-  }
-
-  @Permissions('cash_flows', 'delete')
-  @Delete(':id')
-  remove(
-    @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.remove(resolveTenantScope(user, tenantId), id);
   }
 }

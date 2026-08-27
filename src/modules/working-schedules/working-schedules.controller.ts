@@ -10,53 +10,106 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { WorkingScheduleService } from './working-schedules.service';
-import { CreateWorkingScheduleDto } from './dto/create-working-schedules.dto';
-import { UpdateWorkingScheduleDto } from './dto/update-working-schedules.dto';
+import {
+  BulkCreateWorkingScheduleDto,
+  QueryWorkingScheduleDto,
+  UpdateWorkingScheduleDto,
+} from './dto/working-schedule.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
-import {
-  requireTenantId,
-  resolveTenantScope,
-} from '../../common/utils/tenant-scope';
+import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Generated CRUD, not a real port yet: gated by the global JwtAuthGuard, scoped to the
-// caller's tenant and permission-checked against the 'schedules' catalog resource — but
-// the service underneath is plain Prisma CRUD, not the real business logic.
+/**
+ * Ten routes at the old paths and with the old permissions, including the four the old
+ * module gave their own actions: `read_all` for the tenant-wide list, `readBR`/`readWH`
+ * for the branch and warehouse views, and `read`/`read_own` for anything an employee looks
+ * at about themselves.
+ *
+ * **Route order matters.** `current`, `me`, `branches` and `warehouses` are declared above
+ * `:id`, or they get matched as schedule ids — the same trap `/products/items` carries.
+ */
 @ApiTags('working-schedules')
 @ApiBearerAuth('bearer')
 @Controller('working-schedules')
 export class WorkingScheduleController {
   constructor(private readonly service: WorkingScheduleService) {}
 
-  @Permissions('schedules', 'read')
+  @Permissions('schedules', 'read_all')
   @Get()
-  findAll(@CurrentUser() user: AuthUser, @Query('tenantId') tenantId?: string) {
-    return this.service.findAll(resolveTenantScope(user, tenantId));
+  findAll(
+    @CurrentUser() user: AuthUser,
+    @Query() query: QueryWorkingScheduleDto,
+  ) {
+    return this.service.findAll(requireTenantId(user), query);
   }
 
-  @Permissions('schedules', 'read')
-  @Get(':id')
-  findOne(
+  /** The shift the caller is in right now, or `{ data: null }`. */
+  @Permissions('schedules', 'read', 'read_own')
+  @Get('current')
+  findCurrent(@CurrentUser() user: AuthUser) {
+    return this.service.findCurrent(requireTenantId(user), user.userId);
+  }
+
+  @Permissions('schedules', 'read', 'read_own')
+  @Get('me')
+  findMine(
     @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
+    @Query() query: QueryWorkingScheduleDto,
   ) {
-    return this.service.findOne(resolveTenantScope(user, tenantId), id);
+    return this.service.findMine(requireTenantId(user), user.userId, query);
+  }
+
+  /**
+   * The branch and warehouse views are the same list with the location pinned. The old
+   * routes required the id and answered 400 without it; `QueryWorkingScheduleDto` makes
+   * that a validation error instead.
+   */
+  @Permissions('schedules', 'readBR')
+  @Get('branches')
+  findByBranch(
+    @CurrentUser() user: AuthUser,
+    @Query() query: QueryWorkingScheduleDto,
+  ) {
+    return this.service.findByLocation(requireTenantId(user), query, 'branch');
+  }
+
+  @Permissions('schedules', 'readWH')
+  @Get('warehouses')
+  findByWarehouse(
+    @CurrentUser() user: AuthUser,
+    @Query() query: QueryWorkingScheduleDto,
+  ) {
+    return this.service.findByLocation(
+      requireTenantId(user),
+      query,
+      'warehouse',
+    );
   }
 
   @Permissions('schedules', 'create')
-  @Post()
-  create(
+  @Post('bulk')
+  createBulk(
     @CurrentUser() user: AuthUser,
-    @Body() dto: CreateWorkingScheduleDto,
-    @Query('tenantId') tenantId?: string,
+    @Body() dto: BulkCreateWorkingScheduleDto,
   ) {
-    return this.service.create(
-      requireTenantId(user, tenantId),
-      user.userId,
-      dto,
-    );
+    return this.service.createBulk(requireTenantId(user), user.userId, dto);
+  }
+
+  @Permissions('schedules', 'read', 'read_own')
+  @Get(':id/users/:userId')
+  findUserDetail(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Param('userId') userId: string,
+  ) {
+    return this.service.findUserDetail(requireTenantId(user), id, userId);
+  }
+
+  @Permissions('schedules', 'read', 'read_own')
+  @Get(':id')
+  findOne(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.service.findOne(requireTenantId(user), id);
   }
 
   @Permissions('schedules', 'update')
@@ -65,18 +118,23 @@ export class WorkingScheduleController {
     @CurrentUser() user: AuthUser,
     @Param('id') id: string,
     @Body() dto: UpdateWorkingScheduleDto,
-    @Query('tenantId') tenantId?: string,
   ) {
-    return this.service.update(resolveTenantScope(user, tenantId), id, dto);
+    return this.service.update(requireTenantId(user), user.userId, id, dto);
+  }
+
+  @Permissions('schedules', 'delete')
+  @Delete(':id/users/:userId')
+  removeUser(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Param('userId') userId: string,
+  ) {
+    return this.service.removeUser(requireTenantId(user), id, userId);
   }
 
   @Permissions('schedules', 'delete')
   @Delete(':id')
-  remove(
-    @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.remove(resolveTenantScope(user, tenantId), id);
+  remove(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.service.remove(requireTenantId(user), id);
   }
 }

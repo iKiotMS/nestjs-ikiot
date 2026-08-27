@@ -114,6 +114,11 @@ const PORTED_MODELS = new Set([
   'Branch', 'Warehouse', 'Supplier', 'Brand', 'Category',
   'Product', 'ProductItem', 'Inventory', 'StockMovementRequest',
   'Order', 'Promotion', 'PromotionLog', 'Customer', 'CashDrawerSession',
+  // Hand-edited down to read-only — the generator would put POST/PATCH/DELETE back.
+  'CashFlow',
+  'Holiday', 'ShiftTemplate', 'WorkingSchedule', 'Attendance', 'LeaveRequest',
+  'PayrollSetting', 'Paysheet', 'PayrollPeriod', 'Payslip',
+  'Ticket', 'AIChatHistory',
 ]);
 
 // Fields the server fills in from the authenticated user instead of accepting from the

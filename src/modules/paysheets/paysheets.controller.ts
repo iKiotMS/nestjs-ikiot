@@ -1,82 +1,45 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Param,
-  Patch,
-  Post,
-  Query,
-} from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Put, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { PaysheetService } from './paysheets.service';
-import { CreatePaysheetDto } from './dto/create-paysheets.dto';
-import { UpdatePaysheetDto } from './dto/update-paysheets.dto';
+import { PaysheetDto, QueryPaysheetDto } from './dto/paysheet.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
-import {
-  requireTenantId,
-  resolveTenantScope,
-} from '../../common/utils/tenant-scope';
+import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Generated CRUD, not a real port yet: gated by the global JwtAuthGuard, scoped to the
-// caller's tenant and permission-checked against the 'paysheets' catalog resource — but
-// the service underneath is plain Prisma CRUD, not the real business logic.
-@ApiTags('paysheets')
+// Four routes at the old paths, under /payroll/paysheets. No delete — payslips already
+// generated point at a paysheet and have to stay explainable.
+@ApiTags('payroll')
 @ApiBearerAuth('bearer')
-@Controller('paysheets')
+@Controller('payroll/paysheets')
 export class PaysheetController {
   constructor(private readonly service: PaysheetService) {}
 
   @Permissions('paysheets', 'read')
   @Get()
-  findAll(@CurrentUser() user: AuthUser, @Query('tenantId') tenantId?: string) {
-    return this.service.findAll(resolveTenantScope(user, tenantId));
+  findAll(@CurrentUser() user: AuthUser, @Query() query: QueryPaysheetDto) {
+    return this.service.findAll(requireTenantId(user), query);
   }
 
   @Permissions('paysheets', 'read')
   @Get(':id')
-  findOne(
-    @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.findOne(resolveTenantScope(user, tenantId), id);
+  findOne(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.service.findOne(requireTenantId(user), id);
   }
 
   @Permissions('paysheets', 'create')
   @Post()
-  create(
-    @CurrentUser() user: AuthUser,
-    @Body() dto: CreatePaysheetDto,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.create(
-      requireTenantId(user, tenantId),
-      user.userId,
-      dto,
-    );
+  create(@CurrentUser() user: AuthUser, @Body() dto: PaysheetDto) {
+    return this.service.create(requireTenantId(user), user.userId, dto);
   }
 
   @Permissions('paysheets', 'update')
-  @Patch(':id')
+  @Put(':id')
   update(
     @CurrentUser() user: AuthUser,
     @Param('id') id: string,
-    @Body() dto: UpdatePaysheetDto,
-    @Query('tenantId') tenantId?: string,
+    @Body() dto: PaysheetDto,
   ) {
-    return this.service.update(resolveTenantScope(user, tenantId), id, dto);
-  }
-
-  @Permissions('paysheets', 'delete')
-  @Delete(':id')
-  remove(
-    @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.remove(resolveTenantScope(user, tenantId), id);
+    return this.service.update(requireTenantId(user), id, dto);
   }
 }

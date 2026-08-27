@@ -1,10 +1,5 @@
-import {
-  IsEmail,
-  IsOptional,
-  IsString,
-  IsUUID,
-  MinLength,
-} from 'class-validator';
+import { IsOptional, IsString, IsUUID, MinLength } from 'class-validator';
+import { NormalizeEmail } from '../../../common/decorators/normalize-email.decorator';
 
 // Creates a STAFF account directly with a password (immediately ACTIVE) — the old
 // system's separate INACTIVE→"create account"→ACTIVE step is deferred; note this if you
@@ -19,7 +14,7 @@ export class CreateUserDto {
   phoneNumber: string;
 
   @IsOptional()
-  @IsEmail()
+  @NormalizeEmail()
   email?: string;
 
   @IsString()

@@ -3,80 +3,69 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
-  Patch,
   Post,
-  Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { TicketService } from './tickets.service';
-import { CreateTicketDto } from './dto/create-tickets.dto';
-import { UpdateTicketDto } from './dto/update-tickets.dto';
+import { CreateTicketDto, ReplyTicketDto } from './dto/ticket.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
-import {
-  requireTenantId,
-  resolveTenantScope,
-} from '../../common/utils/tenant-scope';
+import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Generated CRUD, not a real port yet: gated by the global JwtAuthGuard, scoped to the
-// caller's tenant and permission-checked against the 'tickets' catalog resource — but
-// the service underneath is plain Prisma CRUD, not the real business logic.
+/**
+ * The shop's half of support, at the old paths.
+ *
+ * `GET :id` and `DELETE :id` are shared with the operators — the old router had exactly
+ * one handler each, reachable from both consoles, with the ownership check inside. That is
+ * kept rather than split into an `/admin` twin, so a link to a ticket resolves the same
+ * whoever opens it.
+ */
 @ApiTags('tickets')
 @ApiBearerAuth('bearer')
 @Controller('tickets')
 export class TicketController {
   constructor(private readonly service: TicketService) {}
 
+  @Permissions('tickets', 'create')
+  @Post()
+  create(@CurrentUser() user: AuthUser, @Body() dto: CreateTicketDto) {
+    return this.service.create(requireTenantId(user), user, dto);
+  }
+
+  /**
+   * Declared before `:id` — Nest matches routes in declaration order, so the literal
+   * segment has to come first or `my` is read as an id.
+   */
   @Permissions('tickets', 'read')
-  @Get()
-  findAll(@CurrentUser() user: AuthUser, @Query('tenantId') tenantId?: string) {
-    return this.service.findAll(resolveTenantScope(user, tenantId));
+  @Get('my')
+  findMine(@CurrentUser() user: AuthUser) {
+    return this.service.findMine(requireTenantId(user));
+  }
+
+  @Permissions('tickets', 'create')
+  @HttpCode(HttpStatus.OK)
+  @Post(':id/my-reply')
+  replyMine(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Body() dto: ReplyTicketDto,
+  ) {
+    return this.service.replyMine(requireTenantId(user), user, id, dto);
   }
 
   @Permissions('tickets', 'read')
   @Get(':id')
-  findOne(
-    @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.findOne(resolveTenantScope(user, tenantId), id);
-  }
-
-  @Permissions('tickets', 'create')
-  @Post()
-  create(
-    @CurrentUser() user: AuthUser,
-    @Body() dto: CreateTicketDto,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.create(
-      requireTenantId(user, tenantId),
-      user.userId,
-      dto,
-    );
-  }
-
-  @Permissions('tickets', 'update')
-  @Patch(':id')
-  update(
-    @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Body() dto: UpdateTicketDto,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.update(resolveTenantScope(user, tenantId), id, dto);
+  findOne(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.service.findOne(user, id);
   }
 
   @Permissions('tickets', 'delete')
   @Delete(':id')
-  remove(
-    @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.remove(resolveTenantScope(user, tenantId), id);
+  remove(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.service.remove(user, id);
   }
 }

@@ -13,10 +13,9 @@ export interface NotifyInput extends NotificationContent {
 }
 
 // Ported from iKiotMS-BE's src/services/notificationService.js (fan-out) +
-// src/modules/notification (inbox API), merged into one module here. `notify()`,
-// `tenantOwners()` and `managersOfLocation()` are ported from the fan-out side so far.
-// Port `approversOf`/`displayName` when the modules that need them (leave requests,
-// tickets, ...) get their real business logic — and put any new notification *copy* in a
+// src/modules/notification (inbox API), merged into one module here. The whole fan-out
+// side is ported now: notify(), notifySystem(), tenantOwners(), managersOfLocation(),
+// approversOf() and displayName(). Put any new notification *copy* in a
 // `templates/*.templates.ts` file, never inline here or in the calling service (see
 // CLAUDE.md "Notification & audit templates").
 @Injectable()
@@ -77,6 +76,43 @@ export class NotificationService {
         error instanceof Error ? error.stack : error,
       );
       return { notified: 0 };
+    }
+  }
+
+  /**
+   * A notification for the **platform operators**, not for any tenant.
+   *
+   * Ported from iKiotMS-BE's `src/services/systemNotificationService.js`. Its storage is
+   * the same `Notification` table with `tenantId` and `recipientId` both null — that pair
+   * of nulls *is* what makes a row a system notification, and the admin inbox filters on
+   * a whitelist of `type` values so tenant-level rows can't drift into it.
+   *
+   * Broadcast to the `admin` Socket.IO room, which only the gateway can put a socket in
+   * (see CLAUDE.md "Realtime"). Never throws, same invariant as `notify()`: a bank detail
+   * really was saved even if telling the operator about it failed.
+   */
+  async notifySystem(
+    content: NotificationContent & { referenceId?: string },
+  ): Promise<void> {
+    try {
+      const notification = await this.prisma.notification.create({
+        data: {
+          tenantId: null,
+          recipientId: null,
+          type: content.type,
+          title: content.title,
+          description: content.description,
+          link: content.link,
+          referenceId: content.referenceId,
+          isRead: false,
+        },
+      });
+      this.realtime.emitToRoom('admin', 'system-notification', notification);
+    } catch (error) {
+      this.logger.error(
+        `Failed to create system notification (${content.type})`,
+        error instanceof Error ? error.stack : error,
+      );
     }
   }
 
@@ -144,6 +180,71 @@ export class NotificationService {
         error instanceof Error ? error.stack : error,
       );
       return [];
+    }
+  }
+
+  /**
+   * Who signs off on this person's requests.
+   *
+   * Ported from `approversOf`. The old version asked "is this a STAFF with a branch? then
+   * the BRANCH_MANAGERs of that branch, else the tenant owners", with a note that warehouse
+   * managers always escalate to the owner because `permissions.json` never let them approve
+   * leave. That role no longer exists, so the question becomes the one the appointment
+   * already answers: whoever is appointed manager of the location this person works at,
+   * falling back to the owners.
+   *
+   * **The requester is always removed**, which is the load-bearing part — a manager filing
+   * their own leave must not end up as their own approver. The old code did the same, and
+   * `reviewLeaveRequest` refuses self-approval as a second line.
+   */
+  async approversOf(user: {
+    userId: string;
+    tenantId: string;
+    branchId: string | null;
+    warehouseId: string | null;
+  }): Promise<string[]> {
+    const managers = await this.managersOfLocation({
+      tenantId: user.tenantId,
+      branchId: user.branchId,
+      warehouseId: user.warehouseId,
+    });
+    const others = managers.filter((id) => id !== user.userId);
+    if (others.length > 0) return others;
+
+    // They manage the place themselves (or it has no manager): escalate to the owners.
+    const owners = await this.tenantOwners(user.tenantId);
+    return owners.filter((id) => id !== user.userId);
+  }
+
+  /**
+   * A person's name for notification copy — "Nguyễn Văn A đã gửi đơn nghỉ phép".
+   *
+   * Falls back through email and phone to a generic word, and never throws: a notification
+   * with a vague name is better than a business transaction that failed because a lookup
+   * did. Ported from `displayName`.
+   */
+  async displayName(userId: string): Promise<string> {
+    try {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+          profileFirstName: true,
+          profileLastName: true,
+          email: true,
+          phoneNumber: true,
+        },
+      });
+      if (!user) return 'Nhân viên';
+
+      const full =
+        `${user.profileFirstName ?? ''} ${user.profileLastName ?? ''}`.trim();
+      return full || user.email || user.phoneNumber || 'Nhân viên';
+    } catch (error) {
+      this.logger.error(
+        'displayName lookup failed',
+        error instanceof Error ? error.stack : error,
+      );
+      return 'Nhân viên';
     }
   }
 

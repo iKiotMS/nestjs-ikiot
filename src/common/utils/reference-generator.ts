@@ -19,6 +19,7 @@ export const REFERENCE_PREFIX = {
   SUPPLIER: 'SUP',
   PAYROLL: 'PAYR',
   SUBSCRIPTION: 'IKMS', // tenant pays iKiot for a plan (company bank — not tenant CashFlow)
+  TICKET: 'TK', // support thread; shown to both the shop and the operator
 } as const;
 
 export const CASHFLOW_PREFIXES = [

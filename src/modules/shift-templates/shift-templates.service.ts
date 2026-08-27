@@ -1,44 +1,150 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CreateShiftTemplateDto } from './dto/create-shift-templates.dto';
-import { UpdateShiftTemplateDto } from './dto/update-shift-templates.dto';
+import { paginate, skipFor } from '../../common/utils/pagination';
+import { fromShiftTime, toShiftTime } from './shift-time';
+import {
+  QueryShiftTemplateDto,
+  ShiftTemplateDto,
+} from './dto/shift-template.dto';
+import type { Prisma, ShiftTemplate } from '../../../generated/prisma/client';
 
+/** ACTIVE | DELETED — a shift template is soft-deleted, schedules point at it. */
+export const ShiftTemplateStatus = {
+  ACTIVE: 'ACTIVE',
+  DELETED: 'DELETED',
+} as const;
+
+/**
+ * Named shift patterns — "Ca hành chính 08:00–17:00" — that `WorkingSchedule` rows are cut
+ * from. Ported from iKiotMS-BE's `ShiftTemplateService`.
+ *
+ * **Every read filters `status: ACTIVE`**, including the by-id one, exactly as the old
+ * service did: a deleted template is gone as far as this module is concerned, but the
+ * rows still point at it, so it is never actually removed.
+ */
 @Injectable()
 export class ShiftTemplateService {
   constructor(private readonly prisma: PrismaService) {}
 
-  findAll(tenantId?: string) {
-    return this.prisma.shiftTemplate.findMany({
-      where: { ...(tenantId ? { tenantId } : {}) },
+  /** Times go out as `HH:mm`, the shape the old string columns had. */
+  private toResponse(row: ShiftTemplate) {
+    return {
+      ...row,
+      startTime: fromShiftTime(row.startTime),
+      endTime: fromShiftTime(row.endTime),
+    };
+  }
+
+  async findAll(tenantId: string, query: QueryShiftTemplateDto) {
+    const where: Prisma.ShiftTemplateWhereInput = {
+      tenantId,
+      status: ShiftTemplateStatus.ACTIVE,
+    };
+    if (query.name) {
+      where.name = { contains: query.name, mode: 'insensitive' };
+    }
+
+    const [rows, total] = await Promise.all([
+      this.prisma.shiftTemplate.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: skipFor(query.page, query.limit),
+        take: query.limit,
+      }),
+      this.prisma.shiftTemplate.count({ where }),
+    ]);
+
+    return paginate(
+      rows.map((row) => this.toResponse(row)),
+      total,
+      query.page,
+      query.limit,
+    );
+  }
+
+  async findOne(tenantId: string, id: string) {
+    return this.toResponse(await this.findRow(tenantId, id));
+  }
+
+  async create(tenantId: string, dto: ShiftTemplateDto) {
+    const created = await this.prisma.shiftTemplate.create({
+      data: {
+        tenantId,
+        name: dto.name,
+        startTime: toShiftTime(dto.startTime),
+        endTime: toShiftTime(dto.endTime),
+        status: ShiftTemplateStatus.ACTIVE,
+      },
     });
+    return { message: 'Tạo ca mẫu thành công', data: this.toResponse(created) };
   }
 
-  // findFirst + explicit throw rather than findFirstOrThrow: Prisma's own not-found error
-  // isn't an HttpException, so Nest turns it into a 500. A row in another tenant must be
-  // indistinguishable from one that doesn't exist — 404 either way, never 403.
-  async findOne(tenantId: string | undefined, id: string) {
-    const found = await this.prisma.shiftTemplate.findFirst({
-      where: { id, ...(tenantId ? { tenantId } : {}) },
+  /** A full replace, not a merge — the old service `$set` the whole DTO. */
+  async update(tenantId: string, id: string, dto: ShiftTemplateDto) {
+    await this.findRow(tenantId, id);
+    const updated = await this.prisma.shiftTemplate.update({
+      where: { id },
+      data: {
+        name: dto.name,
+        startTime: toShiftTime(dto.startTime),
+        endTime: toShiftTime(dto.endTime),
+      },
     });
-    if (!found) throw new NotFoundException('ShiftTemplate not found');
-    return found;
+    return {
+      message: 'Cập nhật ca mẫu thành công',
+      data: this.toResponse(updated),
+    };
   }
 
-  create(tenantId: string, data: CreateShiftTemplateDto) {
-    return this.prisma.shiftTemplate.create({ data: { ...data, tenantId } });
+  /**
+   * Soft delete. `WorkingSchedule.shiftTemplateId` is a real foreign key here, so a hard
+   * delete would fail at the database the moment the template had ever been scheduled —
+   * and the schedule rows still need to say which shift they were.
+   */
+  async remove(tenantId: string, id: string) {
+    await this.findRow(tenantId, id);
+    const deleted = await this.prisma.shiftTemplate.update({
+      where: { id },
+      data: { status: ShiftTemplateStatus.DELETED },
+    });
+    return {
+      message: 'Xóa ca mẫu thành công',
+      data: { id: deleted.id, status: deleted.status },
+    };
   }
 
-  async update(
-    tenantId: string | undefined,
-    id: string,
-    data: UpdateShiftTemplateDto,
-  ) {
-    await this.findOne(tenantId, id);
-    return this.prisma.shiftTemplate.update({ where: { id }, data });
+  /**
+   * Every template a batch of schedules names, keyed by id.
+   *
+   * `WorkingScheduleService` calls this; the old code had its own copy
+   * (`getTenantShiftTemplates`) reaching straight into the model. Keeping the lookup here
+   * means "a usable template is ACTIVE and in this tenant" is stated once.
+   */
+  async activeByIds(
+    tenantId: string,
+    ids: string[],
+  ): Promise<Map<string, ShiftTemplate>> {
+    const unique = [...new Set(ids)];
+    if (unique.length === 0) return new Map();
+
+    const templates = await this.prisma.shiftTemplate.findMany({
+      where: {
+        id: { in: unique },
+        tenantId,
+        status: ShiftTemplateStatus.ACTIVE,
+      },
+    });
+    if (templates.length !== unique.length) {
+      throw new NotFoundException('Một hoặc nhiều ca mẫu không hợp lệ');
+    }
+    return new Map(templates.map((template) => [template.id, template]));
   }
 
-  async remove(tenantId: string | undefined, id: string) {
-    await this.findOne(tenantId, id);
-    return this.prisma.shiftTemplate.delete({ where: { id } });
+  private async findRow(tenantId: string, id: string): Promise<ShiftTemplate> {
+    const row = await this.prisma.shiftTemplate.findFirst({
+      where: { id, tenantId, status: ShiftTemplateStatus.ACTIVE },
+    });
+    if (!row) throw new NotFoundException('Không tìm thấy ca mẫu');
+    return row;
   }
 }

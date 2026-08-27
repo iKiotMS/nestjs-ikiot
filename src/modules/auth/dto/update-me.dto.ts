@@ -1,17 +1,12 @@
-import {
-  IsDateString,
-  IsEmail,
-  IsIn,
-  IsOptional,
-  IsString,
-} from 'class-validator';
+import { IsDateString, IsIn, IsOptional, IsString } from 'class-validator';
+import { NormalizeEmail } from '../../../common/decorators/normalize-email.decorator';
 
 // Field-level write access is enforced in AuthService.updateMe, not here: TENANT_OWNER/ADMIN
 // may set every field below; STAFF/CUSTOMER may only set avatarUrl (mirrors the old
 // AuthService.updateProfile role gate).
 export class UpdateMeDto {
   @IsOptional()
-  @IsEmail()
+  @NormalizeEmail()
   email?: string;
 
   @IsOptional()

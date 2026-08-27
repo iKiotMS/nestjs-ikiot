@@ -19,6 +19,7 @@ import {
 import type { LocationRefDto } from '../../common/dto/location-ref.dto';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import type { AuthUser } from '../../common/types/auth-user.type';
+import { supervisesLocation } from '../working-schedules/shift-supervisor.service';
 import {
   FINAL_MOVEMENT_STATUSES,
   MovementStatus,
@@ -87,12 +88,13 @@ type MovementRow = Prisma.StockMovementRequestGetPayload<{
  *      something that didn't happen, and a failed notification must not fail the transfer.
  *
  * **Access control is a substitution, not a port.** The old service branched on
- * BRANCH_MANAGER / WAREHOUSE_MANAGER and on `managedScheduleAccess` (temporary rights
- * granted by a working schedule). None of that exists here: those two roles are gone, and
- * the schedule module is in the deferred group. What replaces it is simple and checkable —
- * a TENANT_OWNER may act at any of the tenant's locations, and a STAFF account may act at
- * the one location they are posted to (`User.branchId` / `User.warehouseId`). Revisit when
- * WorkingSchedule is ported; the seam is `canActAt()` and nothing else.
+ * BRANCH_MANAGER / WAREHOUSE_MANAGER, both of which are gone: a TENANT_OWNER may act at any
+ * of the tenant's locations, and a STAFF account may act at the one location they are posted
+ * to (`User.branchId` / `User.warehouseId`).
+ *
+ * The other half of the old rule — `managedScheduleAccess`, temporary rights while running a
+ * shift — **is restored** now that WorkingSchedule is ported. It enters through `canActAt()`
+ * and nowhere else, exactly as this comment used to promise.
  *
  * Two role-based rules from the old code are deliberately dropped rather than translated:
  * "branch managers cannot create IMPORT requests" and "branch managers cannot EXPORT to a
@@ -1018,9 +1020,19 @@ export class StockMovementService {
     return { branchId: user.branchId, warehouseId: user.warehouseId };
   }
 
+  /**
+   * The one seam, as promised: a TENANT_OWNER acts anywhere in the tenant, a STAFF account
+   * acts where it is posted — **or where the shift it is currently supervising reaches**.
+   *
+   * That last clause is `managedScheduleAccess` from iKiotMS-BE, restored now that
+   * WorkingSchedule is ported. It only ever widens to a location the supervisor is already
+   * posted at (`ShiftSupervisorService` intersects the shift's locations with their own),
+   * so this is about *when* they may act, not *where*.
+   */
   private canActAt(user: AuthUser, location: LocationColumns): boolean {
     const own = this.postingOf(user);
     if (!own) return true;
+    if (supervisesLocation(user.shiftSupervision, location)) return true;
     if (location.branchId) return own.branchId === location.branchId;
     if (location.warehouseId) return own.warehouseId === location.warehouseId;
     return false;

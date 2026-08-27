@@ -10,19 +10,19 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ShiftTemplateService } from './shift-templates.service';
-import { CreateShiftTemplateDto } from './dto/create-shift-templates.dto';
-import { UpdateShiftTemplateDto } from './dto/update-shift-templates.dto';
+import {
+  QueryShiftTemplateDto,
+  ShiftTemplateDto,
+} from './dto/shift-template.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
-import {
-  requireTenantId,
-  resolveTenantScope,
-} from '../../common/utils/tenant-scope';
+import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
-// Generated CRUD, not a real port yet: gated by the global JwtAuthGuard, scoped to the
-// caller's tenant and permission-checked against the 'schedules' catalog resource — but
-// the service underneath is plain Prisma CRUD, not the real business logic.
+/**
+ * Five routes at the old paths. Gated on `schedules:*` rather than a resource of their own
+ * — a shift template is part of scheduling, and the old routes used the same resource.
+ */
 @ApiTags('shift-templates')
 @ApiBearerAuth('bearer')
 @Controller('shift-templates')
@@ -31,28 +31,23 @@ export class ShiftTemplateController {
 
   @Permissions('schedules', 'read')
   @Get()
-  findAll(@CurrentUser() user: AuthUser, @Query('tenantId') tenantId?: string) {
-    return this.service.findAll(resolveTenantScope(user, tenantId));
+  findAll(
+    @CurrentUser() user: AuthUser,
+    @Query() query: QueryShiftTemplateDto,
+  ) {
+    return this.service.findAll(requireTenantId(user), query);
   }
 
   @Permissions('schedules', 'read')
   @Get(':id')
-  findOne(
-    @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.findOne(resolveTenantScope(user, tenantId), id);
+  findOne(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.service.findOne(requireTenantId(user), id);
   }
 
   @Permissions('schedules', 'create')
   @Post()
-  create(
-    @CurrentUser() user: AuthUser,
-    @Body() dto: CreateShiftTemplateDto,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.create(requireTenantId(user, tenantId), dto);
+  create(@CurrentUser() user: AuthUser, @Body() dto: ShiftTemplateDto) {
+    return this.service.create(requireTenantId(user), dto);
   }
 
   @Permissions('schedules', 'update')
@@ -60,19 +55,14 @@ export class ShiftTemplateController {
   update(
     @CurrentUser() user: AuthUser,
     @Param('id') id: string,
-    @Body() dto: UpdateShiftTemplateDto,
-    @Query('tenantId') tenantId?: string,
+    @Body() dto: ShiftTemplateDto,
   ) {
-    return this.service.update(resolveTenantScope(user, tenantId), id, dto);
+    return this.service.update(requireTenantId(user), id, dto);
   }
 
   @Permissions('schedules', 'delete')
   @Delete(':id')
-  remove(
-    @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Query('tenantId') tenantId?: string,
-  ) {
-    return this.service.remove(resolveTenantScope(user, tenantId), id);
+  remove(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.service.remove(requireTenantId(user), id);
   }
 }

@@ -1,4 +1,5 @@
-import { IsEmail, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsOptional, IsString, MinLength } from 'class-validator';
+import { NormalizeEmail } from '../../../common/decorators/normalize-email.decorator';
 
 export class RegisterDto {
   @IsString()
@@ -20,7 +21,7 @@ export class RegisterDto {
   otpCode: string;
 
   @IsOptional()
-  @IsEmail()
+  @NormalizeEmail()
   email?: string;
 
   @IsOptional()

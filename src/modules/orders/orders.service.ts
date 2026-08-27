@@ -16,6 +16,7 @@ import { can } from '../../common/utils/permission';
 import type { AuthUser } from '../../common/types/auth-user.type';
 import { paginate, skipFor } from '../../common/utils/pagination';
 import { SepayOrderService } from './sepay-order.service';
+import { PromotionService } from '../promotions/promotions.service';
 import {
   INSTANT_COMPLETE_METHODS,
   OrderStatus,
@@ -64,6 +65,11 @@ type OrderRow = Prisma.OrderGetPayload<{ include: typeof ORDER_INCLUDE }>;
  * request body and stored it, which meant a crafted call could ring up a full basket for
  * zero. It is derived from the lines here — CLAUDE.md has flagged this since the generated
  * CRUD went in, and this is the port that closes it.
+ *
+ * **So is the discount.** The client names the promotions it picked; `priceOrder` runs them
+ * through the same engine `/promotions/calculate` uses and writes the result. Half-trusting
+ * the client — taking the promotion total from it while computing everything else — is how
+ * an order could quietly come out at full price with a discount on the screen.
  */
 @Injectable()
 export class OrderService {
@@ -75,6 +81,7 @@ export class OrderService {
     private readonly notifications: NotificationService,
     private readonly realtime: RealtimeGateway,
     private readonly sepay: SepayOrderService,
+    private readonly promotions: PromotionService,
   ) {}
 
   // ─── Create ────────────────────────────────────────────────────────────────
@@ -88,12 +95,12 @@ export class OrderService {
 
     if (dto.customerId)
       await this.assertCustomerExists(tenantId, dto.customerId);
-    await this.assertPromotionsExist(tenantId, dto.appliedPromotions ?? []);
     const isSepay = dto.paymentMethod === PaymentMethod.SEPAY;
     const banking = isSepay ? await this.requireBanking(tenantId) : null;
 
-    const lines = await this.priceLines(tenantId, dto);
-    const grandTotal = this.grandTotalOf(lines, dto);
+    const priced = await this.priceOrder(tenantId, dto);
+    const { lines, appliedPromotions, discountType, discountValue } = priced;
+    const grandTotal = this.grandTotalOf(lines, discountType, discountValue);
 
     // Cash tendered has to at least cover the bill — the old DTO checked this and it is
     // the difference between "change" and a silent shortfall booked as revenue.
@@ -131,8 +138,8 @@ export class OrderService {
           customerPay: dto.customerPay,
           change,
           note: dto.note,
-          discountType: dto.discountType ?? null,
-          discountValue: dto.discountValue ?? 0,
+          discountType,
+          discountValue,
           items: {
             create: lines.map((line) => ({
               productItemId: line.productItemId,
@@ -142,13 +149,7 @@ export class OrderService {
               discountAmount: line.discountAmount,
             })),
           },
-          appliedPromotions: {
-            create: (dto.appliedPromotions ?? []).map((promotion) => ({
-              promotionId: promotion.promotionId,
-              promoName: promotion.promoName,
-              discountAmount: promotion.discountAmount,
-            })),
-          },
+          appliedPromotions: { create: appliedPromotions },
         },
         include: ORDER_INCLUDE,
       });
@@ -428,7 +429,7 @@ export class OrderService {
   async completeSepayOrder(
     tenantId: string,
     paymentReference: string,
-    sepayTransactionId: string,
+    sepayTransactionId: string | null,
     transferAmount: number,
   ) {
     const pending = await this.prisma.order.findFirst({
@@ -448,7 +449,7 @@ export class OrderService {
       });
       if (settled) {
         this.logger.warn(
-          `SePay transfer ${sepayTransactionId} (${transferAmount}) for ${paymentReference} ignored — ` +
+          `SePay transfer ${sepayTransactionId ?? '(no id)'} (${transferAmount}) for ${paymentReference} ignored — ` +
             `order ${settled.id} is already ${settled.status} via ${settled.paymentMethod}. Manual refund may be required.`,
         );
       }
@@ -465,7 +466,7 @@ export class OrderService {
     const updated = await this.prisma.$transaction(async (tx) => {
       const claimed = await tx.order.updateMany({
         where: { id: pending.id, status: OrderStatus.PENDING },
-        data: { status: OrderStatus.COMPLETED },
+        data: { status: OrderStatus.COMPLETED, sepayTransactionId },
       });
       if (claimed.count === 0) return null;
 
@@ -483,6 +484,9 @@ export class OrderService {
           amount: transferAmount,
           paymentMethod: PaymentMethod.SEPAY,
           paymentReference: settled.paymentReference,
+          // Stored on both rows, as iKiotMS-BE did: the order answers "was this paid",
+          // the cash flow is what a reconciliation against the bank statement reads.
+          sepayTransactionId,
           description: `SePay - ${settled.paymentReference}`,
         },
       });
@@ -530,19 +534,84 @@ export class OrderService {
    * would satisfy the database and quietly link two tenants' rows together. In Mongo the
    * same field was a dangling reference and nothing noticed.
    */
-  private async assertPromotionsExist(
-    tenantId: string,
-    applied: { promotionId: string }[],
-  ) {
-    const ids = [...new Set(applied.map((entry) => entry.promotionId))];
-    if (ids.length === 0) return;
+  /**
+   * Everything about the sale's money, worked out here rather than taken on trust: what
+   * each line costs after discount, which promotions applied and for how much.
+   *
+   * **The promotion discount is priced server-side.** It used to be assumed: `grandTotalOf`
+   * skips `discountValue` for a PROMOTION sale on the grounds that the engine had already
+   * spread it across `items[].discountAmount` — true only if the client had called
+   * `/promotions/calculate` and echoed the breakdown back. A till that sent
+   * `appliedPromotions` with a total but left the lines alone got a full-price order and no
+   * error, so the customer paid the undiscounted amount while the screen showed the
+   * discount. Now the client only names the promotion ids and this runs the same engine
+   * `/promotions/calculate` does, so the two cannot disagree.
+   *
+   * It also closes a second hole: the engine re-checks eligibility (dates, branch, minimum
+   * spend, usage caps), so an expired or out-of-branch promotion is a 400 instead of a
+   * discount. The old code only checked that the id existed in the tenant.
+   *
+   * The variants get looked up twice on a promotion sale — once here, once inside the
+   * engine's cart builder. That is the price of the engine owning its own view of the cart,
+   * and one extra indexed read per discounted sale is worth paying for it.
+   */
+  private async priceOrder(tenantId: string, dto: CreateOrderDto) {
+    const lines = await this.priceLines(tenantId, dto);
+    const promotionIds = [
+      ...new Set((dto.appliedPromotions ?? []).map((p) => p.promotionId)),
+    ];
 
-    const found = await this.prisma.promotion.count({
-      where: { tenantId, id: { in: ids } },
-    });
-    if (found !== ids.length) {
-      throw new NotFoundException('Không tìm thấy khuyến mãi được áp dụng');
+    if (promotionIds.length === 0) {
+      if (dto.discountType === 'ORDER' && !dto.discountValue) {
+        throw new BadRequestException(
+          'Giảm giá cả đơn cần discountValue lớn hơn 0',
+        );
+      }
+      return {
+        lines,
+        appliedPromotions: [],
+        discountType: dto.discountType ?? null,
+        discountValue: dto.discountValue ?? 0,
+      };
     }
+
+    // One discountType per order, so the two kinds of discount can't be stacked — the
+    // schema has nowhere to record that a total is part manual and part promotion.
+    if (dto.discountType === 'ORDER') {
+      throw new BadRequestException(
+        'Không thể vừa giảm giá cả đơn vừa áp dụng khuyến mãi trên cùng một đơn hàng',
+      );
+    }
+
+    const pricing = await this.promotions.calculate(tenantId, {
+      branchId: dto.branchId,
+      customerId: dto.customerId,
+      items: lines.map((line) => ({
+        productItemId: line.productItemId,
+        quantity: line.quantity,
+        unitPrice: line.unitPrice,
+      })),
+      promotionIds,
+    });
+
+    const discountByItem = new Map(
+      pricing.itemBreakdown.map((entry) => [
+        entry.productItemId,
+        entry.discountAmount,
+      ]),
+    );
+
+    return {
+      // The engine's allocation replaces whatever the client sent, including a manual line
+      // discount — see OrderItemDto. Two discounts on one line have no home in the schema.
+      lines: lines.map((line) => ({
+        ...line,
+        discountAmount: discountByItem.get(line.productItemId) ?? 0,
+      })),
+      appliedPromotions: pricing.appliedPromotions,
+      discountType: 'PROMOTION',
+      discountValue: pricing.totalDiscount,
+    };
   }
 
   /**
@@ -621,21 +690,30 @@ export class OrderService {
    * What the customer actually owes.
    *
    * Line totals minus the per-line discounts, then minus a manual whole-order discount if
-   * there was one. A `PROMOTION` discount is **not** subtracted again: the engine already
-   * spread it across the lines, and `discountValue` is only carried as a record of the
-   * total. Never below zero.
+   * there was one. A `PROMOTION` discount is **not** subtracted again: `priceOrder` has
+   * already spread it across the lines, and `discountValue` is only carried as a record of
+   * the total. That used to be an assumption about what the client had sent; it is now a
+   * fact about what this service just computed. Never below zero.
    */
   private grandTotalOf(
     lines: { quantity: number; unitPrice: number; discountAmount: number }[],
-    dto: CreateOrderDto,
+    discountType: string | null,
+    discountValue: number,
   ): number {
+    // Each line is rounded before the discount comes off, exactly as `pricing-engine.ts`
+    // rounds `lineTotal`. Summing unrounded and rounding once at the end would leave a
+    // promotion sale a đồng or two away from the total the preview screen quoted, which
+    // reads as a bug at the till whichever number is "right".
     const afterLineDiscounts = lines.reduce(
       (sum, line) =>
-        sum + Math.max(0, line.quantity * line.unitPrice - line.discountAmount),
+        sum +
+        Math.max(
+          0,
+          Math.round(line.quantity * line.unitPrice) - line.discountAmount,
+        ),
       0,
     );
-    const orderDiscount =
-      dto.discountType === 'ORDER' ? (dto.discountValue ?? 0) : 0;
+    const orderDiscount = discountType === 'ORDER' ? discountValue : 0;
     return Math.max(0, Math.round(afterLineDiscounts - orderDiscount));
   }
 

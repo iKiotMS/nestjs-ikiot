@@ -23,6 +23,7 @@ import {
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { Public } from '../../common/decorators/public.decorator';
+import { RawResponse } from '../../common/decorators/raw-response.decorator';
 import { requireTenantId } from '../../common/utils/tenant-scope';
 import type { AuthUser } from '../../common/types/auth-user.type';
 
@@ -107,6 +108,7 @@ export class SepayOrderWebhookController {
     private readonly sepay: SepayOrderService,
   ) {}
 
+  @RawResponse()
   @Public()
   @HttpCode(HttpStatus.OK)
   @Post('order')
@@ -130,10 +132,13 @@ export class SepayOrderWebhookController {
       }
 
       // SePay sends its transaction id as a number; anything else is a malformed call.
+      // `null` rather than `''` for that case — it is stored on the order and the cash
+      // flow as the link to the bank statement, and an empty string there would read as
+      // "we have the id" to anyone reconciling.
       const transactionId =
         typeof payload.id === 'string' || typeof payload.id === 'number'
           ? String(payload.id)
-          : '';
+          : null;
 
       const order = await this.service.completeSepayOrder(
         tenant.id,

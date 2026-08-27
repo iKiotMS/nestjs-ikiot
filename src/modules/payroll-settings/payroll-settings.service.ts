@@ -1,44 +1,68 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CreatePayrollSettingDto } from './dto/create-payroll-settings.dto';
-import { UpdatePayrollSettingDto } from './dto/update-payroll-settings.dto';
+import {
+  CreatePayrollSettingDto,
+  UpdatePayrollSettingDto,
+} from './dto/payroll-setting.dto';
+import type { PayrollSetting } from '../../../generated/prisma/client';
 
+/**
+ * One row per tenant — the numbers every payroll calculation divides by.
+ *
+ * Ported from `PayrollSettingService`. **Exactly one setting per tenant**, which the old
+ * service enforced by refusing a second create; here `@@unique` would be better but the
+ * schema doesn't carry one, so the check stays where it was.
+ *
+ * `lateGraceMinutes` is read from here by three modules — attendance (when it stores
+ * `lateMinutes`), the schedule view, and payroll — which is exactly why it is one tenant
+ * setting rather than three constants.
+ */
 @Injectable()
 export class PayrollSettingService {
   constructor(private readonly prisma: PrismaService) {}
 
-  findAll(tenantId?: string) {
-    return this.prisma.payrollSetting.findMany({
-      where: { ...(tenantId ? { tenantId } : {}) },
+  /**
+   * The tenant's settings, or a 404.
+   *
+   * Payroll needs these to compute anything, so "not configured" has to be an explicit
+   * failure rather than a silent set of defaults — a shop that never set
+   * `standardWorkingDays` would otherwise have salaries divided by a number nobody chose.
+   */
+  async findOne(tenantId: string): Promise<PayrollSetting> {
+    const setting = await this.prisma.payrollSetting.findFirst({
+      where: { tenantId },
     });
+    if (!setting) throw new NotFoundException('Không tìm thấy cấu hình lương');
+    return setting;
   }
 
-  // findFirst + explicit throw rather than findFirstOrThrow: Prisma's own not-found error
-  // isn't an HttpException, so Nest turns it into a 500. A row in another tenant must be
-  // indistinguishable from one that doesn't exist — 404 either way, never 403.
-  async findOne(tenantId: string | undefined, id: string) {
-    const found = await this.prisma.payrollSetting.findFirst({
-      where: { id, ...(tenantId ? { tenantId } : {}) },
+  async create(tenantId: string, dto: CreatePayrollSettingDto) {
+    const existing = await this.prisma.payrollSetting.findFirst({
+      where: { tenantId },
+      select: { id: true },
     });
-    if (!found) throw new NotFoundException('PayrollSetting not found');
-    return found;
+    if (existing) throw new ConflictException('Cấu hình lương đã tồn tại');
+
+    const data = await this.prisma.payrollSetting.create({
+      data: { tenantId, ...dto },
+    });
+    return { message: 'Cấu hình lương đã được tạo thành công', data };
   }
 
-  create(tenantId: string, data: CreatePayrollSettingDto) {
-    return this.prisma.payrollSetting.create({ data: { ...data, tenantId } });
-  }
-
-  async update(
-    tenantId: string | undefined,
-    id: string,
-    data: UpdatePayrollSettingDto,
-  ) {
-    await this.findOne(tenantId, id);
-    return this.prisma.payrollSetting.update({ where: { id }, data });
-  }
-
-  async remove(tenantId: string | undefined, id: string) {
-    await this.findOne(tenantId, id);
-    return this.prisma.payrollSetting.delete({ where: { id } });
+  async update(tenantId: string, dto: UpdatePayrollSettingDto) {
+    if (Object.keys(dto).length === 0) {
+      throw new BadRequestException('Không có dữ liệu cập nhật');
+    }
+    const current = await this.findOne(tenantId);
+    const data = await this.prisma.payrollSetting.update({
+      where: { id: current.id },
+      data: dto,
+    });
+    return { message: 'Cấu hình lương đã được cập nhật thành công', data };
   }
 }

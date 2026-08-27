@@ -2,35 +2,52 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateTenantDto } from './dto/create-tenants.dto';
 import { UpdateTenantDto } from './dto/update-tenants.dto';
+import { TENANT_SELECT } from './tenant-select';
 
+/**
+ * Platform-admin CRUD over every tenant (`AdminOnlyGuard` on the controller).
+ *
+ * A shop reading or editing **its own** record goes through `TenantSelfService` instead —
+ * that one takes the tenant id off the access token and can't be pointed at anyone else.
+ */
 @Injectable()
 export class TenantService {
   constructor(private readonly prisma: PrismaService) {}
 
   findAll() {
-    return this.prisma.tenant.findMany({ where: {} });
+    return this.prisma.tenant.findMany({ select: TENANT_SELECT });
   }
 
   // findFirst + explicit throw rather than findFirstOrThrow: Prisma's own not-found error
   // isn't an HttpException, so Nest turns it into a 500. A row in another tenant must be
   // indistinguishable from one that doesn't exist — 404 either way, never 403.
   async findOne(id: string) {
-    const found = await this.prisma.tenant.findFirst({ where: { id } });
+    const found = await this.prisma.tenant.findFirst({
+      where: { id },
+      select: TENANT_SELECT,
+    });
     if (!found) throw new NotFoundException('Tenant not found');
     return found;
   }
 
   create(data: CreateTenantDto) {
-    return this.prisma.tenant.create({ data: { ...data } });
+    return this.prisma.tenant.create({
+      data: { ...data },
+      select: TENANT_SELECT,
+    });
   }
 
   async update(id: string, data: UpdateTenantDto) {
     await this.findOne(id);
-    return this.prisma.tenant.update({ where: { id }, data });
+    return this.prisma.tenant.update({
+      where: { id },
+      data,
+      select: TENANT_SELECT,
+    });
   }
 
   async remove(id: string) {
     await this.findOne(id);
-    return this.prisma.tenant.delete({ where: { id } });
+    return this.prisma.tenant.delete({ where: { id }, select: TENANT_SELECT });
   }
 }

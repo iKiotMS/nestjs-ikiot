@@ -13,6 +13,9 @@
  */
 export interface AuditableLoginResponse {
   accessToken: string;
+  /** Not read by the interceptor, but `satisfies` excess-property-checks the top-level
+   *  literal, so every key the login paths return has to be declared here. */
+  refreshToken: string;
   user: {
     id: string;
     email: string | null;
