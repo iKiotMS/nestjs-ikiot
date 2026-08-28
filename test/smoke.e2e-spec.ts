@@ -466,26 +466,46 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     await http()
       .post('/users')
       .set(auth())
-      .send({
-        phoneNumber: '0651234567',
-        password: 'password123',
-        roleId,
-        branchId,
-      })
+      .send({ phoneNumber: '0651234567', roleId, branchId })
       .expect(400);
     note('POST /users with VoIP prefix 065: 400 OK (phone validator wired)');
 
+    // Hiring and granting access are two calls, as in the old system: POST /users puts the
+    // person on the books with no password, POST /users/:id/account switches the login on.
     const staff = await http()
       .post('/users')
       .set(auth())
-      .send({
-        phoneNumber: PHONE_STAFF,
-        password: 'password123',
-        roleId,
-        branchId,
-      })
+      .send({ phoneNumber: PHONE_STAFF, roleId, branchId })
       .expect(201);
     staffId = staff.body.data.id;
+    expect(staff.body.data.status).toBe('INACTIVE');
+
+    const beforeAccount = await prisma.user.findUnique({
+      where: { id: staffId },
+      select: { password: true },
+    });
+    expect(beforeAccount?.password).toBeNull();
+    // No password on file means no way in, even with the right phone number.
+    await http()
+      .post('/auth/login')
+      .send({ phoneNumber: PHONE_STAFF, password: 'password123' })
+      .expect(401);
+
+    // A password field on POST /users is silently stripped by the ValidationPipe's
+    // whitelist rather than quietly setting one — pinned so the split can't regress.
+    expect(staff.body.data).not.toHaveProperty('password');
+
+    await http()
+      .post(`/users/${staffId}/account`)
+      .set(auth())
+      .send({ newPassword: 'password123', reEnterPassword: 'password123' })
+      .expect(201);
+    const activated = await http()
+      .post('/auth/login')
+      .send({ phoneNumber: PHONE_STAFF, password: 'password123' })
+      .expect(201);
+    expect(activated.body.data.accessToken).toEqual(expect.any(String));
+    note('hire → INACTIVE, no login; POST /users/:id/account activates OK');
 
     const list = await http().get('/users').set(auth()).expect(200);
     expect(list.body.pagination.total).toBe(1);
@@ -499,6 +519,46 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       .expect(200);
     expect(searched.body.pagination.total).toBe(1);
     note('GET /users?search: OK');
+
+    // Seats are billable, so hiring is capped by the plan the same way branches and
+    // products are. Pinned to the staff already on the books, then released — the rest of
+    // this suite hires two more.
+    await prisma.subscription.updateMany({
+      where: { tenantId },
+      data: { quotaSnapshotMaxUsers: 1 },
+    });
+    const overQuota = await http()
+      .post('/users')
+      .set(auth())
+      .send({ phoneNumber: '0987650008', roleId, branchId })
+      .expect(400);
+    expect(overQuota.body.message).toContain('giới hạn');
+    await prisma.subscription.updateMany({
+      where: { tenantId },
+      data: { quotaSnapshotMaxUsers: 10 },
+    });
+    note('POST /users past the plan seat limit: 400 OK');
+
+    // Email is unique per shop, and it is checked when hiring — not only when editing,
+    // which is where a duplicate used to lie undetected until someone opened the record.
+    await http()
+      .patch(`/users/${staffId}`)
+      .set(auth())
+      .send({ email: 'An.Tran@Example.com' })
+      .expect(200);
+    const dupEmail = await http()
+      .post('/users')
+      .set(auth())
+      // Different case on purpose: @NormalizeEmail lowercases before anything compares.
+      .send({
+        phoneNumber: '0987650008',
+        email: 'an.tran@example.com',
+        roleId,
+        branchId,
+      })
+      .expect(409);
+    expect(dupEmail.body.message).toContain('Email');
+    note('POST /users with an email already in the shop: 409 OK (case-folded)');
 
     await http()
       .patch(`/users/${staffId}`)
@@ -1653,16 +1713,16 @@ describe('smoke: products / inventory / staff / stock movements', () => {
       })
       .expect(200);
 
-    // A second cashier to hand over to.
+    // A second cashier to hand over to — hired, then given a login.
     const secondStaff = await http()
       .post('/users')
       .set(auth())
-      .send({
-        phoneNumber: '0987650003',
-        password: 'password123',
-        roleId,
-        branchId,
-      })
+      .send({ phoneNumber: '0987650003', roleId, branchId })
+      .expect(201);
+    await http()
+      .post(`/users/${secondStaff.body.data.id}/account`)
+      .set(auth())
+      .send({ newPassword: 'password123', reEnterPassword: 'password123' })
       .expect(201);
 
     const opened = await http()
@@ -1920,12 +1980,12 @@ describe('smoke: products / inventory / staff / stock movements', () => {
     const drifter = await http()
       .post('/users')
       .set(auth())
-      .send({
-        phoneNumber: '0987650004',
-        password: 'password123',
-        roleId,
-        branchId,
-      })
+      .send({ phoneNumber: '0987650004', roleId, branchId })
+      .expect(201);
+    await http()
+      .post(`/users/${drifter.body.data.id}/account`)
+      .set(auth())
+      .send({ newPassword: 'password123', reEnterPassword: 'password123' })
       .expect(201);
 
     // Take their posting away.

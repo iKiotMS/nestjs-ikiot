@@ -9,6 +9,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Server, Socket } from 'socket.io';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SystemRole } from '../constants/system-role';
+import { socketCorsOrigins } from '../config/env';
 
 // Ported (with a deliberate fix) from iKiotMS-BE's src/services/socketService.js. The old
 // version let ANY connected client emit `join <room>` for any room string at all,
@@ -17,7 +18,10 @@ import { SystemRole } from '../constants/system-role';
 // at connection time and never client-controlled: a client can never join a room it
 // doesn't belong to, because there's no "join" event handler at all.
 @Injectable()
-@WebSocketGateway({ cors: { origin: process.env.FRONTEND_URL ?? '*' } })
+// Same origin list the HTTP side uses. It used to read FRONTEND_URL while `main.ts` read
+// CORS_ORIGIN, so locking down the API left the socket wide open — two transports, one
+// policy, one variable to get wrong instead of two.
+@WebSocketGateway({ cors: { origin: socketCorsOrigins() } })
 export class RealtimeGateway
   implements OnGatewayConnection, OnGatewayDisconnect
 {

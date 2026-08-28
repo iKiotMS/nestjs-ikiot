@@ -1,3 +1,9 @@
+// First import, deliberately: `validateEnv()` below runs before Nest is created, and
+// therefore before `ConfigModule.forRoot()` has read `.env`. Without this, a developer
+// whose configuration lives in `.env` rather than in real environment variables would be
+// told DATABASE_URL is missing. Loading twice is harmless — dotenv never overwrites a
+// variable that is already set, so real environment variables still win in production.
+import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
@@ -5,23 +11,19 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
-
-/**
- * Which origins the browser may call this API from. `CORS_ORIGIN` is a comma-separated
- * list; leaving it unset allows any origin, which is fine for local dev and must not be
- * how production runs — set it there.
- */
-function corsOrigins(): string[] | true {
-  const configured = process.env.CORS_ORIGIN?.trim();
-  if (!configured) return true;
-  return configured
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
-}
+import { corsOrigins, validateEnv } from './common/config/env';
 
 async function bootstrap() {
+  // Before anything connects: a deploy missing JWT_SECRET must fail here, not on the first
+  // login after the load balancer has already cut over to it.
+  validateEnv();
+
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // PrismaService and RedisService both implement OnModuleDestroy; without this they are
+  // never called, because Nest only listens for SIGTERM when asked to. Render sends SIGTERM
+  // on every deploy, so this is the difference between closing the pool and dropping it.
+  app.enableShutdownHooks();
 
   // Express ignores X-Forwarded-For until it is told to trust the proxy in front of it.
   // Without this, `request.ip` is the load balancer and the header is pure client input —
@@ -69,6 +71,11 @@ async function bootstrap() {
     .build();
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('docs', app, document);
+  // iKiotMS-BE served its Swagger UI at /api-docs and served it unconditionally, including
+  // in production. Both paths are mounted so existing bookmarks and any monitoring that
+  // pings the docs keep working. If the docs should stop being public, that is a decision
+  // to make deliberately here — it is not the behaviour being changed by the port.
+  SwaggerModule.setup('api-docs', app, document);
 
   await app.listen(process.env.PORT ?? 3000);
 }

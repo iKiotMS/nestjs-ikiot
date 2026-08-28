@@ -14,8 +14,9 @@ Data layer and module scaffolding for all 33 top-level entities are in place (se
 pnpm install            # install dependencies
 pnpm run start:dev      # run with watch mode (primary dev loop)
 pnpm run start:debug    # watch mode + --inspect debugger
-pnpm run build          # compile to dist/ via nest build
-pnpm run start:prod     # run compiled output (node dist/main)
+pnpm run build          # prisma generate && nest build
+pnpm run start:prod     # run compiled output (node dist/src/main — see below)
+pnpm run deploy:migrate # prisma migrate deploy (run before starting a new release)
 pnpm run lint           # eslint --fix over src/apps/libs/test
 pnpm run format         # prettier --write over src/ and test/
 
@@ -30,6 +31,36 @@ npx prisma generate             # regenerate the Prisma client into generated/pr
 npx prisma migrate dev          # create + apply a migration against DATABASE_URL (needs a real Postgres)
 npx prisma studio               # browse data in a GUI
 ```
+
+### Deploying
+
+- **Build order is `prisma generate` then `nest build`**, wired into both `build` and
+  `postinstall`. `generated/prisma` is gitignored, so a clean checkout cannot compile until
+  the client is generated — without the hook, CI fails on `Cannot find module
+  '../../generated/prisma/client'`.
+- **The entry point is `dist/src/main.js`, not `dist/main.js`.** `generated/prisma` sits
+  outside `src/`, so TypeScript's common root is the project directory and the tree is
+  emitted one level deeper. `start:prod` already points there; if you ever move the Prisma
+  client output, check this before shipping.
+- **Run `pnpm run deploy:migrate` before starting a new release.** Nothing applies
+  migrations at boot on purpose — a process that migrates on start races itself the moment
+  there is more than one instance.
+- **`validateEnv()` (`src/common/config/env.ts`) runs before Nest is created** and aborts
+  the boot on a missing `DATABASE_URL` or token secret, and — in production only — on an
+  open CORS policy. Optional variables only log a warning naming the feature they switch
+  off, so the startup log answers "why are no emails going out". Add new variables there,
+  and to `.env.example`, or nobody finds out they are missing until the feature is used.
+- **`ACCESS_TOKEN_SECRET` takes precedence over `JWT_SECRET`**, the order iKiotMS-BE used —
+  the running production environment is configured with the old name. Both the signer
+  (`AuthModule`) and the verifier (`JwtStrategy`) go through `accessTokenSecret()` so they
+  cannot end up on different keys.
+- **Healthcheck: `GET /health`** (and `/` for convenience), unauthenticated. Swagger is at
+  both `/docs` and `/api-docs`, the old path — public, as it was before. If that should
+  change, change it deliberately; the port did not.
+- `CORS_ORIGIN` (falling back to `FRONTEND_URL`) covers HTTP **and** Socket.IO. They used to
+  read different variables, so locking down the API left the socket open.
+- Set `TRUST_PROXY=1` behind Render's load balancer, or `request.ip` in the audit trail is
+  the balancer's and `X-Forwarded-For` is unvalidated client input.
 
 Unit test config lives inline in `package.json` (`rootDir: src`, matches `*.spec.ts`); e2e tests use `test/jest-e2e.json` and live in `test/`.
 
@@ -306,7 +337,7 @@ Inside the `subscriptions` module the work is split in two, and the split is wor
 - **`SubscriptionCronService`** (`@nestjs/schedule`, `EVERY_DAY_AT_2AM`, skipped when `NODE_ENV=test`) ports `src/jobs/subscriptionJob.js` — batch status-transition sweep, then expiry-reminder notifications+emails at `REMINDER_DAYS=[7,3,1]` days out. `ScheduleModule.forRoot()` is registered once in `AppModule`. It loads the candidates and applies `nextSubscriptionStatus` per row rather than re-expressing the rules as `updateMany` filters, and looks the tenant owners up in one batched query rather than one per subscription.
 - One intentional behavior fix vs. the old code: `activateAfterPayment`'s webhook-triggered history-log entry now sets `changedById: null` instead of iKiotMS-BE's `changedById: <tenantId>` (a tenant ID in a "changed by user" field read as a bug, not a feature — there's no acting user for an automated payment event).
 - `src/common/utils/reference-generator.ts` (`generateReference`, `REFERENCE_PREFIX`) is shared, reusable infrastructure ported from `referenceGenerator.js`/`referencePrefix.js` — reuse it (don't reinvent) when Order/Supplier/Payroll reference codes get ported.
-- **The expiry rules live in exactly one function**: `nextSubscriptionStatus(subscription, now)` in `src/modules/subscriptions/subscription-status.ts`, unit-tested in `subscription-status.spec.ts`. Two callers apply it — `SubscriptionService.settleSubscription()` lazily on every read (so a tenant is never served on a term that ran out an hour ago) and `SubscriptionCronService` nightly. **Never re-implement those transitions at a call site**; they used to exist as two hand-written copies and had already drifted (the lazy one allowed ACTIVE→EXPIRED directly, the cron one insisted on a PAST_DUE stop first).
+- **The expiry rules live in exactly one function**: `nextSubscriptionStatus(subscription, now)` in `src/modules/subscriptions/subscription-status.ts`, unit-tested in `subscription-status.spec.ts`. Two callers apply it — `SubscriptionService.settleSubscription()` lazily on every read (so a tenant is never served on a term that ran out an hour ago) and `SubscriptionCronService` nightly (02:00 `Asia/Ho_Chi_Minh` — every cron in this project pins the zone, because all three answer questions about a local calendar day and an untimed 2 AM on a UTC host fires at 09:00 Vietnam time). **Never re-implement those transitions at a call site**; they used to exist as two hand-written copies and had already drifted (the lazy one allowed ACTIVE→EXPIRED directly, the cron one insisted on a PAST_DUE stop first).
 - **Gating a route on the subscription** — `SubscriptionService.requireActiveSubscription(tenantId)` replaces the old `requireActiveSubscription` Express middleware, and `assertQuota(tenantId, quotaField, count, label)` wraps it for "how many X may this tenant have" limits. PAST_DUE passes (that's what the grace period is for); EXPIRED/CANCELLED/no-subscription throw 403. `quotaField` is typed `QuotaField`, derived from the schema rather than hardcoded, so a new `quotaSnapshotMaxX` column is usable immediately. A limit is unlimited when it is `null` or **negative**; `0` is a real limit of zero (it used to be read as unlimited).
 - Plan quotas are frozen onto the subscription at purchase time (`quotaSnapshot*`), never read live off the `Plan` — so a price-list change can't retroactively shrink an existing customer. All three write sites go through `quotaSnapshotOf(plan)` (exported from `subscriptions.service.ts`), so adding a quota means three edits: `Plan`, `Subscription.quotaSnapshot*` plus `quotaSnapshotOf`, and `prisma/seed.ts`.
 - Day counts (`daysLeft`, `daysOverdue`) use `wholeDaysBetween`, which counts between midnights UTC. Dividing the raw millisecond gap — the previous approach — made the answer depend on the hour the endpoint happened to be called.
@@ -333,6 +364,26 @@ account-lifecycle and leave-balance half on 2026-08-25, keeping the old sub-path
 `POST|PATCH /users/:id/leave-balance`, `POST /users/:id/account`,
 `PATCH /users/:id/account/password`, `PATCH /users/:id/account/deactivate`.
 
+- **Hiring and granting access are two calls, deliberately.** `POST /users` puts the person
+  on the books **INACTIVE with no password**; `POST /users/:id/account` sets a password and
+  switches the login on. Restored 2026-08-28 after the first NestJS pass had merged them
+  into one call that took a password and created ACTIVE — which also left
+  `POST /users/:id/account` answering 409 for every freshly created employee. The split is
+  the real workflow: HR enters new hires before IT provisions access, someone can hold a
+  paysheet, a shift and a leave balance before they ever log in, and `deactivateAccount`
+  clears the password to park a person in exactly that state again.
+- **A seat is consumed at hire, not at first login.** `create` calls
+  `SubscriptionService.assertQuota('quotaSnapshotMaxUsers', …)` over non-DELETED STAFF rows,
+  the same way branches, warehouses and products check theirs. Missing this was a real hole:
+  a shop on any plan could add unlimited employees.
+- **Email and citizen ID are unique per tenant, checked at create *and* update**, and backed
+  by partial unique indexes (`users_one_email_per_tenant`,
+  `users_one_identification_per_tenant`, migration `20260828010000`) excluding DELETED rows —
+  deleting a staff member anonymises them, so a departed employee's address must not block a
+  rehire. The check used to run only on update, so duplicates were created freely and only
+  surfaced weeks later when someone edited one of the two rows. `phoneNumber` is
+  deliberately *not* in those indexes: it is the platform-wide login handle and is checked
+  across every tenant.
 - **`GET /users` is paginated and filtered** (`page`, `limit`, `search`, `status`,
   `roleId`, `branchId`, `warehouseId`) and returns the `{ data, pagination }` envelope.
   Two rules carried over from the old `getStaffFilter`: only STAFF accounts appear (the

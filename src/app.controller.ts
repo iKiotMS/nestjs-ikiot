@@ -17,6 +17,18 @@ export class AppController {
   @Public()
   @RawResponse()
   @Get()
+  root() {
+    return this.appService.health();
+  }
+
+  /**
+   * The path iKiotMS-BE's probe actually hits (`app.get("/health")` in its `app.js`).
+   * Mounted alongside `/` so an existing Render/uptime check pointed at `/health` does not
+   * start failing the moment traffic moves to this service.
+   */
+  @Public()
+  @RawResponse()
+  @Get('health')
   health() {
     return this.appService.health();
   }

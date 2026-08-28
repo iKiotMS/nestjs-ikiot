@@ -39,7 +39,12 @@ export class SubscriptionCronService {
     private readonly email: EmailService,
   ) {}
 
-  @Cron(CronExpression.EVERY_DAY_AT_2AM)
+  // 02:00 **in Vietnam**, not on whatever clock the host runs. Everything below is a
+  // question about a local calendar day — has this term run out, how many days are left —
+  // and on a UTC host an untimed 2 AM fires at 09:00 Vietnam time, moving every one of
+  // those answers by a day for shops in the window between. The holiday and leave crons
+  // were pinned during the port; this one was missed.
+  @Cron(CronExpression.EVERY_DAY_AT_2AM, { timeZone: 'Asia/Ho_Chi_Minh' })
   async runDailyJob() {
     if (process.env.NODE_ENV === 'test') return;
 

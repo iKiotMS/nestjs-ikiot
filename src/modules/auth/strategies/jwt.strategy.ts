@@ -6,6 +6,7 @@ import type { AuthUser } from '../../../common/types/auth-user.type';
 import { SystemRole } from '../../../common/constants/system-role';
 import { INACTIVE_USER_STATUSES } from '../../../common/constants/user-status';
 import { ShiftSupervisorService } from '../../working-schedules/shift-supervisor.service';
+import { accessTokenSecret } from '../../../common/config/env';
 
 interface JwtPayload {
   sub: string;
@@ -20,7 +21,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: process.env.JWT_SECRET ?? '',
+      secretOrKey: accessTokenSecret(),
     });
   }
 

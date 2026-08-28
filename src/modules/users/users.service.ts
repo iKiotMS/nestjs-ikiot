@@ -7,6 +7,7 @@ import {
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationService } from '../notifications/notifications.service';
+import { SubscriptionService } from '../subscriptions/subscriptions.service';
 import { StaffNotificationTemplates } from '../notifications/templates/staff.templates';
 import { UserStatus } from '../../common/constants/user-status';
 import { SystemRole } from '../../common/constants/system-role';
@@ -69,6 +70,7 @@ export class UserService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationService,
+    private readonly subscriptions: SubscriptionService,
   ) {}
 
   /**
@@ -126,12 +128,34 @@ export class UserService {
     return user;
   }
 
+  /**
+   * Hire someone. Creates the employee **INACTIVE and without a password** — giving them a
+   * login is `POST /users/:id/account`, a separate call. See `CreateUserDto` for why.
+   */
   async create(tenantId: string, dto: CreateUserDto) {
     await this.assertRoleBelongsToTenant(tenantId, dto.roleId);
     await this.assertWorkplaceBelongsToTenant(
       tenantId,
       dto.branchId,
       dto.warehouseId,
+    );
+
+    // Seats are what a plan actually sells, so this has to be checked before the row is
+    // written, not when the login is switched on: a shop that could add unlimited employee
+    // records and only pay for the ones that sign in is not on a per-seat plan at all.
+    // Counts the same population the list screen shows — STAFF, not yet deleted.
+    await this.subscriptions.assertQuota(
+      tenantId,
+      'quotaSnapshotMaxUsers',
+      () =>
+        this.prisma.user.count({
+          where: {
+            tenantId,
+            systemRole: SystemRole.STAFF,
+            status: { not: UserStatus.DELETED },
+          },
+        }),
+      'số nhân viên',
     );
 
     const phoneNumber = validateVietnamPhoneNumber(dto.phoneNumber);
@@ -143,20 +167,26 @@ export class UserService {
       throw new ConflictException('Số điện thoại đã tồn tại');
     }
 
-    const passwordHash = await bcrypt.hash(dto.password, BCRYPT_COST);
+    // The same check `update` runs. It used to run only there, so two colleagues could be
+    // created on one email address and the clash only surfaced when somebody later edited
+    // one of them — by which time both had orders and payslips against them.
+    await this.assertContactDetailsAreFree(tenantId, null, {
+      email: dto.email,
+    });
+
     const user = await this.prisma.user.create({
       data: {
         tenantId,
         phoneNumber,
         email: dto.email,
-        password: passwordHash,
+        password: null,
         systemRole: SystemRole.STAFF,
         roleId: dto.roleId,
         branchId: dto.branchId,
         warehouseId: dto.warehouseId,
         profileFirstName: dto.firstName,
         profileLastName: dto.lastName,
-        status: UserStatus.ACTIVE,
+        status: UserStatus.INACTIVE,
       },
       select: SELECT_SAFE,
     });
@@ -293,15 +323,20 @@ export class UserService {
    */
   private async assertContactDetailsAreFree(
     tenantId: string,
-    id: string,
+    /** The row being edited, excluded from the search. `null` when creating. */
+    id: string | null,
     values: { email?: string; identificationId?: string },
   ) {
+    // Spread rather than `id: { not: id }`: with a null id that would read as "id is not
+    // null", which is every row — right by accident here, but only by accident.
+    const others = id ? { id: { not: id } } : {};
+
     if (values.email) {
       const taken = await this.prisma.user.findFirst({
         where: {
           tenantId,
           email: values.email.toLowerCase().trim(),
-          id: { not: id },
+          ...others,
           status: { not: UserStatus.DELETED },
         },
         select: { id: true },
@@ -314,7 +349,7 @@ export class UserService {
         where: {
           tenantId,
           profileIdentificationId: values.identificationId,
-          id: { not: id },
+          ...others,
           status: { not: UserStatus.DELETED },
         },
         select: { id: true },
@@ -370,10 +405,11 @@ export class UserService {
   // ─── Account lifecycle ─────────────────────────────────────────────────────
 
   /**
-   * Switch on the login for an employee who was created without one.
+   * Switch on the login for an employee who was created without one — the second half of
+   * hiring, and the only way a staff account ever gets a password.
    *
-   * `POST /users` creates a staff account with a password already set, so this is for the
-   * other path: a record entered by HR first and given access later.
+   * Reached twice in a normal life: right after `POST /users`, and again after
+   * `deactivateAccount` has cleared the password to park someone without deleting them.
    */
   async createAccount(
     tenantId: string,

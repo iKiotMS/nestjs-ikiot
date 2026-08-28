@@ -181,6 +181,12 @@ model User {
   auditLogs                   AuditLog[]
   stockMovementRequests       StockMovementRequest[]
 
+  // `email` and `profileIdentificationId` are unique per tenant among non-DELETED rows.
+  // Not declarable here — the DSL has no WHERE clause and deleting a staff member
+  // anonymises them, so their old address must not block a rehire. See the follow-up
+  // migration 20260828010000_user_unique_contact_details, which is SQL-only for that
+  // reason. `phoneNumber` is deliberately *not* in there: it is the platform-wide login
+  // handle, checked across every tenant in UserService.create.
   @@map("users")
 }
 

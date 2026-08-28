@@ -2,6 +2,7 @@ import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'node:crypto';
 import { RedisService } from '../../common/redis/redis.service';
+import { refreshTokenSecret } from '../../common/config/env';
 
 /** Seven days, the window iKiotMS-BE's RefreshToken documents carried. */
 export const REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60;
@@ -58,9 +59,7 @@ export class RefreshTokenService {
   }
 
   private secret(): string {
-    return (
-      process.env.REFRESH_TOKEN_SECRET ?? process.env.JWT_SECRET ?? 'changeme'
-    );
+    return refreshTokenSecret();
   }
 
   /** Mints a refresh token and records the session it stands for. */
